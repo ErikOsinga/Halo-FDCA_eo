@@ -29,29 +29,139 @@ from astropy import units as u
 from astropy.coordinates import SkyCoord
 import emcee
 import corner
+from regions import Regions
+
 
 
 class MCMCfitter(object):
-    """MCMC fitter class"""
-    def __init__(self, data, iminfo, regrid=True, mask=False):
-        self.data = data
-        self.iminfo = iminfo
+    """MCMC fitter class
+
+    image  -- str   -- location of fits image
+    rms    -- float -- rms in Jy/beam
+    regrid -- bool  -- whether to regrid to 1pix=1beam
+    mask   -- str   -- mask file to remove sources
+    """
+    def __init__(self, image, rms, regrid=True, mask=None, output_dir='./output/'):
+        self.image = image
         self.regrid = regrid # whether to regrid to 1 pixel approx 1 beam
         self.mask = mask
-
-        self.wherefinite = np.isfinite(data)
-
-        ## TODO: in case of mask make more NaN values
-        self.data_noNaN = data[self.wherefinite] # is 1D array
-
+        self.output_dir = output_dir
         self.dim = 4 # Circle model
         self.labels = ['I0', 'x0', 'y0', 'r_e']
 
-        # x-y grid of pixels before re-gridding
+        # Bookkeeping of settings and directories
+        self.check_settings()
+
+        # Load the image file, WCS information and other handy conversions
+        # Note pickling WCS gives WARNING: https://github.com/astropy/astropy/issues/12834
+        self.data_original, self.wcs1, self.iminfo  = self.loadfitsim(image, rms)
+    
+        # Bookkeeping, store the data to use as self.data_mcmc 
+        # and the mask as self.wherefinite
+        self.set_data_to_use()
+
+    def check_settings(self):
+        """Check input settings"""
+        check_createdir(self.output_dir)
+
+        self.plotdir = self.output_dir + 'Plots/'
+        check_createdir(self.plotdir)
+
+        self.imname = self.image.split('/')[-1]
+        print(f"Using image {self.imname}")
+
+        ## TODO: log
+
+    def loadfitsim(self, image, rms):
+        """Load fits image and return useful info"""
+        with fits.open(image) as hdul:
+            data = hdul[0].data
+            header = hdul[0].header
+            wcs1 = wcs.WCS(header)
+
+        # Dealing with the fact that .fits files can have 2 or 4 axes
+        data = check_datashape(data)
+        # Loading useful info from header
+        iminfo = image_info(header, rms)
+
+        return data, wcs1, iminfo
+
+    def set_data_to_use(self):
+        """
+        Bookkeeping. 
+
+        1. Masks the data inside the regions defined if mask file is given
+
+        2. Keeps track of the case with and without regridding.
+
+        
+        if self.regrid then:
+            All model calculations are done wrt the original grid, which is then
+            reprojected and regridded in the same way as the data and compared to that
+            regridded data. 
+        """
+
+        # Mask the data by setting NaN inside the regions defined by the user
+        # and return a MASK array that is False where NaNs occur
+        data, self.wherefinite_original, data_mask0 = self.mask_data(self.data_original)
+        # data is still the original 2D shape, data_mask0 is data with 0 instead of NaNs
+
+        ## TODO: maskoutside can also be defined quite easily
+        
+        # x-y grid of pixels before re-gridding. Models will be computed on this grid
         self.coords = np.meshgrid(np.arange(0, data.shape[1]),np.arange(0, data.shape[0]))
 
-        if mask:
-            print("TODO")
+        if self.regrid:
+            # We need to regrid also the mask
+            # In this case don't take the sum but just take the max value for pooling
+            self.wherefinite = regridding(self.wherefinite_original, self.iminfo, func=np.max)
+
+            # regridded version of the data (cant have NaNs)
+            self.data_rebin = regridding(data_mask0, self.iminfo)
+
+            # # Regridded version of the data with NaNs, to test the mask
+            # self.data_rebin_masked = np.copy(self.data_rebin)
+            # self.data_rebin_masked[~self.wherefinite] = np.nan
+
+            # 1D array of the regridded data outside the mask (removed NaNs)
+            self.data_mcmc = self.data_rebin[self.wherefinite]
+
+        else: ## No reprojecing and regridding
+            # 1D array of the data outside the mask (removed NaNs)
+            self.data_mcmc = data[self.wherefinite_original] 
+            self.wherefinite = self.wherefinite_original
+
+        return
+
+    def mask_data(self, data):
+        """
+        Mask the data if self.mask is not None by setting it to NaN
+
+        Then return a mask array that is True wherever the data is NaN
+        """
+
+        if self.mask is not None:
+            data_masked = np.copy(data)
+            r = Regions.read(self.mask)
+            w = self.wcs1
+            while w.naxis > 2: # in case the wcs is 4 axes
+                w = w.dropaxis(-1)
+
+            # Mask every region by setting it to NaN
+            for i in range(len(r)):
+                rmask = r[i].to_pixel(w).to_mask()
+                # True where inside region, 0 where not, same shape as data
+                rmask = np.array(rmask.to_image(data.shape),dtype='bool')
+                # Mask outside the region
+                data_masked[rmask] = np.nan  
+
+        wherefinite = np.isfinite(data_masked)
+
+        # We also need a copy with NaNs to zero, because we have to rotate and regrid
+        data_mask0 = np.copy(data_masked)
+        data_mask0[~wherefinite] = 0
+
+        return data_masked, wherefinite, data_mask0
 
     def convolve_with_gaussian(self, data):
         """
@@ -72,15 +182,11 @@ class MCMCfitter(object):
         Ir = self.convolve_with_gaussian(Ir)
 
         if self.regrid: 
-            # Have to regrid the model as well as the data
+            # Have to regrid the model and compare to regridded data
             Ir = regridding(Ir, self.iminfo)
-            
-            # ("TODO:: case of NaNs", dont flatten but use mask)
-            Ir = Ir.flatten()
-        
-        else: # No regridding
-            # Flatten and remove where data is NaN for a fair comparison
-            Ir = Ir[self.wherefinite]
+
+        # Remove model points where we don't have data. Either because its masked or NaN                    
+        Ir = Ir[self.wherefinite]
         return Ir
 
     def pre_mcmc_func(self, obj, *theta):
@@ -91,29 +197,26 @@ class MCMCfitter(object):
 
         model = self.circle_model(theta)
 
-        if self.mask:
-            print("TODO")
-            return model[obj.image_mask.ravel() == 0]
-
         return model
 
-    def pre_mcmc_fit(self, p0, bounds):
+    def pre_mcmc_fit(self, p0):
+        """Do a simple curve_fit to estimate starting params for halo"""
 
-        ### TODO: want to rebin already here or no? 
-
-
-        if self.mask:
-            print("TODO")
-            ## something like data = data[self.image_mask.ravel() == 0]
+        # Circle model case, boundary on parameters
+        bounds = ([0.0,0.0,0.0,0.0]
+             ,[np.inf
+             , self.data_original.shape[0], self.data_original.shape[1]
+             , self.data_original.shape[0]*3]
+             )
         
         # Dont have to check finite because I already remove NaNs
         # Call pre_mcmc_func with f(self, *params) and make it match data_noNaN
-        opt, pcov = curve_fit(self.pre_mcmc_func, self, self.data_noNaN
-                            ,p0=p0, bounds=bounds, check_finite=False) 
+        opt, pcov = curve_fit(self.pre_mcmc_func, self, self.data_mcmc
+                            ,p0=p0, bounds=bounds, check_finite=True) 
 
         return opt # initial guess I0,x0,y0,r_e in Jy/beam and pixel coords
 
-    def runMCMC(self, theta_guess, walkers=12, steps=400, burninfrac=0.25):
+    def runMCMC(self, theta_guess, walkers=12, steps=400, burninfrac=0.25, save=True):
         """
         Start MCMC with initial guess theta_guess
         """
@@ -121,19 +224,7 @@ class MCMCfitter(object):
         ## TODO Maybe define this in the main class?
         self.walkers = walkers
         self.steps = steps
-
-        if self.regrid:
-            # rotate and regrid the data such that 1 pix approx 1 beam
-
-            ## TODO: case of NANS 
-            self.data_rebin = regridding(self.data, self.iminfo)
-            
-            ## TODO: case of NaNS use the rebinned mask
-            self.data_mcmc = self.data_rebin.flatten()
-
-        else:
-            # Simply use all datapoints except those that are NaN
-            self.data_mcmc = self.data_noNaN
+        self.theta_guess = theta_guess
 
         pos = [theta_guess*(1.+1.e-3*np.random.randn(self.dim)) for i in range(self.walkers)]
 
@@ -154,7 +245,42 @@ class MCMCfitter(object):
             percentiles[i,:] = np.percentile(self.samples[:, :, i], [16, 50, 84])
         self.percentiles = percentiles
 
+        if save:
+            self.savechain()
+
         return sampler
+
+    def savechain(self):
+        """Called by runMCMC if save=True"""
+
+
+        chainpath = f"{self.output_dir}{self.imname.replace('.fits','')}_chain.fits"
+        hdu      = fits.PrimaryHDU()
+        # Save entire chain without burn in period removed
+        hdu.data = self.sampler_chain
+        hdu = self.set_sampler_header(hdu)
+        print(f"Saving chain to {chainpath}")
+        hdu.writeto(chainpath, overwrite=True)
+        return
+
+    def set_sampler_header(self, hdu):
+        hdu.header['nwalkers'] = (self.walkers)
+        hdu.header['steps']    = (self.steps)
+        hdu.header['dim']      = (self.dim)
+        hdu.header['burntime'] = (self.burntime)
+        hdu.header['OBJECT']   = (self.imname,'Input fits file')
+        hdu.header['IMAGE']    = (self.image)
+        hdu.header['UNIT_0'] = ('JY/beam','unit of fit parameter 0')
+        hdu.header['UNIT_1'] = ('PIX','unit of fit parameter 1')
+        hdu.header['UNIT_2'] = ('PIX','unit of fit parameter 2')
+        hdu.header['UNIT_3'] = ('PIX','unit of fit parameter 3')
+
+        for i in range(len(self.theta_guess)):
+            hdu.header['INIT_'+str(i)] = (self.theta_guess[i], 'MCMC initial guess')
+
+        hdu.header['MASK'] = (self.mask,'Mask file used')
+
+        return hdu
 
     def print_bestfitparams(self):
         """
@@ -211,7 +337,7 @@ def lnprior(theta, info):
         radii = np.array([theta['r1']])
     return prior
 
-def plotMCMC(samples, pinit):
+def plotMCMC(samples, pinit, savefig=None):
     """
     Plot MCMC chain and initial guesses
     """
@@ -223,7 +349,7 @@ def plotMCMC(samples, pinit):
                         truths=pinit, # plot blue line at inital value
                         show_titles=True, title_fmt='.5f')
     
-    # if savefig is not None: plt.savefig(savefig.replace('.pdf','_corner.pdf'))
+    if savefig is not None: plt.savefig(savefig.replace('.pdf','_corner.pdf'))
     plt.show()
     plt.close()
 
@@ -240,7 +366,7 @@ def plotMCMC(samples, pinit):
         axes[i].set_ylabel('param '+str(i+1), fontsize=15)
         plt.tick_params(labelsize=15)
 
-    # if savefig is not None: plt.savefig(savefig.replace('.pdf','_walkers.pdf'))
+    if savefig is not None: plt.savefig(savefig.replace('.pdf','_walkers.pdf'))
     plt.show()
     plt.close()
 
@@ -257,7 +383,7 @@ def rotate_image(data, iminfo):
     img_rot = ndimage.rotate(data, -iminfo['bpa'].value, reshape=False)
     return img_rot
 
-def regrid_to_beamsize(data, iminfo, accuracy=100.):
+def regrid_to_beamsize(data, iminfo, accuracy=100., func=np.sum):
     """Regrid data to 1 pixel = 1 beam
     iminfo -- dictionary -- Made by def image_info() in HaloFitting_eo.py
     """    
@@ -273,7 +399,7 @@ def regrid_to_beamsize(data, iminfo, accuracy=100.):
     orig_scale = (np.array(pseudo_size)/np.array(data.shape)).astype(np.int64)
     elements   = np.prod(np.array(orig_scale,dtype='float64'))
 
-    if accuracy is 1:
+    if accuracy == 1:
         pseudo_array = np.copy(data)
     else:
         pseudo_array = np.zeros((pseudo_size))
@@ -283,10 +409,10 @@ def regrid_to_beamsize(data, iminfo, accuracy=100.):
                              orig_scale[0]*j:orig_scale[0]*(j+1)] = data[i,j]/elements
 
     # subsampled array where approx 1 pixel is 1 beam.
-    f= block_reduce(pseudo_array, block_size=tuple(scale), func=np.sum, cval=0)
+    f= block_reduce(pseudo_array, block_size=tuple(scale), func=func, cval=0)
     return f
 
-def regridding(data, iminfo):
+def regridding(data, iminfo, func=np.sum):
     """Rotate image
     iminfo -- dictionary -- Should have beam position angle 'bpa' 
                             and 
@@ -295,5 +421,84 @@ def regridding(data, iminfo):
     IMAGE THAT IS ROTATED AND REGRIDDED TO 1 PIXEL IS 1 BEAM
     """    
     data_rot = rotate_image(data, iminfo)
-    regrid   = regrid_to_beamsize(data_rot, iminfo)
+    regrid   = regrid_to_beamsize(data_rot, iminfo, func=func)
     return regrid
+
+
+def plottwofigures(data1, data2, savefig=None, titles=['',''],show=False):
+    """
+    For checking stuff
+    """
+
+    fig, axes = plt.subplots(1,2)
+
+    for i, data in enumerate([data1,data2]):
+        im = axes[i].imshow(data,origin='lower')
+        cbar = fig.colorbar(im,ax=axes[i])
+        axes[i].set_title(titles[i])
+
+    if savefig is not None:
+        plt.savefig(savefig)
+    if show:
+        plt.show()
+    else:
+        plt.close()
+    return
+
+def check_createdir(directory):
+    if not os.path.isdir(directory):
+        print(f'Creating directory {directory}')
+        os.makedirs(directory)
+    return
+
+def check_datashape(data):
+    """ Check shape of HDU to see if it is 2 axis or 4 axis. Return 2D array."""
+    if len(data.shape) == 4:
+        if data.shape[0] == 1:
+            # Then data is of the form (1,1,xpix,ypix)
+            return data[0,0]
+        elif data.shape[-1] == 1:
+            # Then data is of the form (xpix,ypix,1,1)
+            return data[:,:,0,0]
+    if len(data.shape) == 2:
+        # data is already 2 dimensional
+        return data
+    raise ValueError(f"Data shape {data.shape} not recognised.")
+
+def image_info(header, imagerms):
+    bmaj      = header['BMAJ']*u.deg
+    bmin      = header['BMIN']*u.deg
+    bpa       = header['BPA']*u.deg
+    pix_size  = abs(header['CDELT2'])*u.deg # square pixels
+    beammaj_sigma        = bmaj/(2.*(2.*np.log(2.))**0.5) # Convert to sigma
+    beammin_sigma        = bmin/(2.*(2.*np.log(2.))**0.5) # Convert to sigma
+    pix_area  = abs(header['CDELT1']*header['CDELT2'])*u.deg*u.deg
+    beam_area = 2.*np.pi*1.0*beammaj_sigma*beammin_sigma
+    beam2pix  = beam_area/pix_area
+
+    image_info = {
+        "bmaj":              bmaj,
+        "bmin":              bmin,
+        "bpa":               bpa,
+        "pix_size":          pix_size,
+        "beam_area":         beam_area,
+        "beam2pix":          beam2pix,
+        "xsize":             header['NAXIS1'],
+        "ysize":             header['NAXIS2'],
+        "max_radius":        header['NAXIS1']*2,
+        "imagerms":          imagerms, # in Jy/beam at the moment
+        # print("TODO")
+        # "pix2kpc":           pix2kpc,
+        # "mask":              obj.mask,
+        # "sigma":             obj.mcmc_noise,
+        # "margin":            margin,
+        # "_func_":            obj._func_mcmc,
+        # "image_mask":        obj.image_mask,
+        # "binned_image_mask": obj.binned_image_mask,
+        # "mask_treshold":     obj.mask_treshold,
+        # "max_radius":        obj.max_radius,
+        # "params":            obj.params,
+        # "paramNames":        obj.paramNames,
+        # "gamma_prior":       obj.gamma_prior,
+        }
+    return image_info

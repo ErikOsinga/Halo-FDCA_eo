@@ -71,17 +71,20 @@ if __name__ == '__main__':
     # image = '/home/osingae/Documents/phd/Abell2256/test_halofitting/halotest_NaN.fits'
     # image = '/home/osingae/Documents/phd/Abell2256/test_halofitting/halotest_noise_noNaN.fits'
 
-    # image = '/home/osingae/Documents/phd/Abell2256/images/Abell2256_23MHz.int.restored.zoomhalo_mask.fits'
 
-    image = '/home/osingae/Documents/phd/Abell2256/test_halofitting/halotest_noise.fits'
+    # image = '/home/osingae/Documents/phd/Abell2256/test_halofitting/halotest_noise.fits'
+    image = '/home/osingae/Documents/phd/Abell2256/images/Abell2256_23MHz.int.restored.zoomhalo_mask.fits'
     mask = '/home/osingae/Documents/phd/Abell2256/halo_unrelated_sources_kamlesh.reg'
     regrid=True
     output_dir = './output/'
 
     # I0, x0, y0, r_e  (#Jy/beam, pixel, pixel, pixel)
-    p0 = [1, 660, 423, 20] ## USER INITIAL GUESS: TODO MAKE ARGUMENT 
+    # p0 = [1, 660, 423, 20] ## USER INITIAL GUESS: TODO MAKE ARGUMENT 
+    
+    # TODO: make arguments
+    p0 = [0.1, 230, 260, 100] ## USER INITIAL GUESS: TODO MAKE ARGUMENT 
 
-    rms = 0.1 # 0.1 Jy/beam
+    rms = 8.5e-3 # 8.5 mJy/beam
 
     # Initialise the fitter
     fitter = FDCA.mcmc_eo.MCMCfitter(image, rms
@@ -97,7 +100,7 @@ if __name__ == '__main__':
 
     self=fitter
 
-    sampler = fitter.runMCMC(pinit, walkers=8, steps=10)
+    sampler = fitter.runMCMC(pinit, walkers=200, steps=1000)
     fitter.print_bestfitparams()
 
     savefig = fitter.plotdir + image.split('/')[-1].replace('.fits','.pdf')

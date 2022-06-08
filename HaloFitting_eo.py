@@ -49,7 +49,9 @@ Everything in pixel coordinates.
                              ### and input into MCMC only the values that are not masked.
  -. Then save the chain # DONE
 
- -. Then convert the output to physical coordinates.
+ -. Then convert the output to physical coordinates. ## DONE
+
+ -. Then calculate chi2
 
  -. Then implement arguments
 
@@ -81,6 +83,7 @@ if __name__ == '__main__':
     output_dir = './output/'
     run_MCMC = False
     curvefit = run_MCMC
+    redshift = 0.058 # for unit conversions
 
     # I0, x0, y0, r_e  (#Jy/beam, pixel, pixel, pixel)
     # p0 = [1, 660, 423, 20] ## USER INITIAL GUESS: TODO MAKE ARGUMENT 
@@ -93,7 +96,7 @@ if __name__ == '__main__':
     # Initialise the fitter
     fitter = FDCA.mcmc_eo.MCMCfitter(image, rms
         , mask=mask, regrid=regrid, output_dir=output_dir
-        , maskoutside=maskoutside)
+        , maskoutside=maskoutside, redshift=redshift)
 
     if curvefit:
         # Get first guess from curve_fit
@@ -110,7 +113,7 @@ if __name__ == '__main__':
     else:
         sampler = fitter.loadMCMC()
 
-    fitter.print_bestfitparams()
+    fitter.print_bestfitparams(fitter.percentiles)
     savefig = fitter.plotdir + image.split('/')[-1].replace('.fits','.pdf')
 
     # Corner plot and sampler chain plot
@@ -119,7 +122,7 @@ if __name__ == '__main__':
     fitter.plot_data_model_residual(savefig=savefig)
 
     # Convert params to RA,DEC and r_e in kpc. Also calculate total flux
-    
-
+    fitter.convert_units()
+    # fitter.print_bestfitparams(fitter.percentiles_units)
 
     # Calculate chi2

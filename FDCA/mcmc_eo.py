@@ -30,6 +30,9 @@ from astropy.io import fits
 from astropy import wcs
 from astropy import units as u
 from astropy.coordinates import SkyCoord
+from astropy.cosmology import FlatLambdaCDM
+cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
+
 import emcee
 import corner
 from regions import Regions
@@ -46,12 +49,13 @@ class MCMCfitter(object):
     regrid -- bool  -- whether to regrid to 1pix=1beam
     mask   -- str   -- mask file to remove sources
     """
-    def __init__(self, image, rms, regrid=True, mask=None, output_dir='./output/', maskoutside=None):
+    def __init__(self, image, rms, regrid=True, mask=None, output_dir='./output/', maskoutside=None, redshift=0.058):
         self.image = image
         self.regrid = regrid # whether to regrid to 1 pixel approx 1 beam
         self.mask = mask
         self.maskoutside = maskoutside
         self.output_dir = output_dir
+        self.redshift = redshift
         self.dim = 4 # Circle model
         self.labels = ['$I_0$', '$x_0$', '$y_0$', '$r_e$']
 
@@ -268,6 +272,19 @@ class MCMCfitter(object):
 
         return sampler
 
+    def calculate_chi2(self):
+        """Calculate (reduced) chi2 value"""
+
+        # Naive guess of number of DOF = len(data) - len(parameters)
+        DOF = len(self.data_mcmc) - self.dim
+        
+        # Best fit model in 1D
+        model = self.circle_model(self.bestfitp, returnfull=False)
+
+        self.chi2 = np.sum( ((self.data_mcmc-model)/(self.rmsregrid))**2. )
+
+
+
     def getpercentiles(self):
         """From the burn-in version of the chain, get percentiles"""
         percentiles = np.ones((self.samples.shape[-1],3)) #(4,3) # 4 params, 3 percentiles
@@ -326,16 +343,24 @@ class MCMCfitter(object):
             self.samples = self.sampler_chain[:, self.sampler_header['burntime']:, :]
         self.getpercentiles()
 
-    def print_bestfitparams(self):
+    def print_bestfitparams(self, percentiles):
         """
         After runMCMC() call this to print best fit params
         """
+        unitstr = ['Jy/beam', 'pixel', 'pixel','pixel'] # in case no units
+        
         for i in range(self.dim):
-            low, mid, up = self.percentiles[i]
+            low, mid, up = percentiles[i]
+
+            if type(mid) == u.Quantity:
+                # Then we have units
+                unitstr[i] = str(mid.unit)
+                low, mid, up = low.value, mid.value, up.value
+
             if i == 0:
-                print(f"{self.labels[i]} = {mid:.1E}^+{(up-mid):.1E}_-{(mid-low):.1E}")
+                print(f"{self.labels[i]} = {mid:.1E}^+{(up-mid):.1E}_-{(mid-low):.1E} {unitstr[i]}")
             else:
-                print(f"{self.labels[i]} = {mid:.1F}^+{(up-mid):.1E}_-{(mid-low):.1E}")
+                print(f"{self.labels[i]} = {mid:.1F}^+{(up-mid):.1E}_-{(mid-low):.1E} {unitstr[i]}")
 
     def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None):
         """Plot the data-model-residual plot"""
@@ -389,10 +414,40 @@ class MCMCfitter(object):
 
     def convert_units(self):
         """Convert from pixel units to physical units"""
-        return "TODO"
 
+        # samples with removed burnin, with units.
+        self.samples_I0 = self.samples[:, :, 0] * u.Jy # in Jy/beam
+        # From Jy/beam to Jy/arcsec^2
+        self.samples_I0 /= self.iminfo['beam_area']
+        self.samples_I0 = self.samples_I0.to(u.Jy/u.arcsec**2)
 
+        # From pixel to RA, DEC
+        self.samples_x0, self.samples_y0 = self.wcs1.celestial.wcs_pix2world(self.samples[:, :, 1],self.samples[:, :, 2],1)
+        # In units of degrees
+        self.samples_x0 *= u.deg; self.samples_y0 *= u.deg
 
+        # From pixel to arcsec
+        self.samples_re = self.samples[:, :, 3] * self.iminfo['pix_size'].to(u.arcsec)
+        # From arcsec to kpc
+        self.samples_re *= cosmo.kpc_proper_per_arcmin(self.redshift).to(u.kpc/u.arcsec)
+
+        # Calculate total flux density
+        # From Jy/arcsec**2 to Jy/kpc**2
+        self.samples_I0_kpc = self.samples_I0 / (cosmo.kpc_proper_per_arcmin(self.redshift).to(u.kpc/u.arcsec)**2)
+        
+        percentiles_units = np.ones((self.samples.shape[-1],3)) #(4,3) # 4 params, 3 percentiles
+        percentiles_units = [] #List of quantities: (4,3) # 4 params, 3 percentiles
+        for i, samples in enumerate([self.samples_I0,self.samples_x0,self.samples_y0, self.samples_re]):
+            # percentiles_units[i,:] = np.percentile(samples[:, :], [16, 50, 84])
+            percentiles_units.append(np.percentile(samples[:, :], [16, 50, 84]))
+        self.percentiles_units = percentiles_units
+
+        # Integrated up to infinity
+        totalflux = 2*np.pi*self.samples_I0_kpc*self.samples_re**2
+        # Integrating up to 2.6 r_e  *= 0.73
+        print(f"Best-fit total flux density is {np.median(totalflux):.1f}")
+
+        print ("TODO: check whether total flux calculation is correct")
 
 def lnprob(theta, data, info, modelf):
     """

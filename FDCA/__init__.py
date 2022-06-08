@@ -7,3 +7,4 @@ import logging.config
 import logging.handlers
 
 from . import mcmc_eo
+from . import utils

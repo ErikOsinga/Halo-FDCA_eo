@@ -17,8 +17,11 @@ from scipy.optimize import curve_fit
 import scipy.stats as stats
 from scipy import ndimage
 from scipy.special import gammainc, gamma
+
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize, LogNorm
+import matplotlib.colors as mplc
+
 from skimage.measure import block_reduce
 from skimage.transform import rescale
 from astropy.convolution import Gaussian2DKernel
@@ -31,6 +34,8 @@ import emcee
 import corner
 from regions import Regions
 
+from . import utils
+utils.paper_fig_params()
 
 
 class MCMCfitter(object):
@@ -41,13 +46,14 @@ class MCMCfitter(object):
     regrid -- bool  -- whether to regrid to 1pix=1beam
     mask   -- str   -- mask file to remove sources
     """
-    def __init__(self, image, rms, regrid=True, mask=None, output_dir='./output/'):
+    def __init__(self, image, rms, regrid=True, mask=None, output_dir='./output/', maskoutside=None):
         self.image = image
         self.regrid = regrid # whether to regrid to 1 pixel approx 1 beam
         self.mask = mask
+        self.maskoutside = maskoutside
         self.output_dir = output_dir
         self.dim = 4 # Circle model
-        self.labels = ['I0', 'x0', 'y0', 'r_e']
+        self.labels = ['$I_0$', '$x_0$', '$y_0$', '$r_e$']
 
         # Bookkeeping of settings and directories
         self.check_settings()
@@ -140,20 +146,34 @@ class MCMCfitter(object):
         Then return a mask array that is True wherever the data is NaN
         """
 
+        data_masked = np.copy(data)
+        
+        w = self.wcs1
+        while w.naxis > 2: # in case the wcs is 4 axes
+            w = w.dropaxis(-1)
+        
         if self.mask is not None:
-            data_masked = np.copy(data)
+            print (f"Masking regions {self.mask}")
             r = Regions.read(self.mask)
-            w = self.wcs1
-            while w.naxis > 2: # in case the wcs is 4 axes
-                w = w.dropaxis(-1)
-
             # Mask every region by setting it to NaN
             for i in range(len(r)):
                 rmask = r[i].to_pixel(w).to_mask()
                 # True where inside region, 0 where not, same shape as data
                 rmask = np.array(rmask.to_image(data.shape),dtype='bool')
-                # Mask outside the region
+                # Mask INSIDE the region
                 data_masked[rmask] = np.nan  
+
+        if self.maskoutside is not None:
+            print (f"Masking outside the region {self.maskoutside}")
+            # Also make data outside the regions self.maskoutside.
+            r = Regions.read(self.maskoutside)
+            if len(r) > 1:
+                raise ValueError(f"Mask outside should contain only 1 region. Found {len(r)} regions")            
+            rmask = r[0].to_pixel(w).to_mask()
+            # True where inside region, 0 where not, same shape as data
+            rmask = np.array(rmask.to_image(data.shape),dtype='bool')
+            # Mask OUTSIDE the region
+            data_masked[~rmask] = np.nan
 
         wherefinite = np.isfinite(data_masked)
 
@@ -174,12 +194,15 @@ class MCMCfitter(object):
         astropy_conv = convolve(data,kernel,boundary='extend',normalize_kernel=True)
         return astropy_conv
 
-    def circle_model(self, theta):
+    def circle_model(self, theta, returnfull=False):
         """Return circle model as 1D array"""
         x,y = self.coords
         G   = ((x-theta['x0'])**2+(y-theta['y0'])**2)/theta['r1']**2
         Ir  = theta['I0']*np.exp(-G**(0.5+theta['k_exp']))+theta['off']
         Ir = self.convolve_with_gaussian(Ir)
+        if returnfull:
+            # Return full model as 2D array for plotting
+            return Ir
 
         if self.regrid: 
             # Have to regrid the model and compare to regridded data
@@ -230,7 +253,6 @@ class MCMCfitter(object):
 
         num_CPU = cpu_count()
         with Pool(num_CPU) as pool:
-            ### TODO: pool
             sampler = emcee.EnsembleSampler(self.walkers, self.dim, lnprob, pool=pool,
                             args=[self.data_mcmc, self.iminfo, self.circle_model])
             sampler.run_mcmc(pos, self.steps, progress=True)
@@ -239,21 +261,30 @@ class MCMCfitter(object):
         self.burntime = int(burninfrac * steps)
         # nwalkers by nsteps-burnin by number of parameters: (12,300,4)
         self.samples = self.sampler_chain[:,self.burntime:,:]#.reshape((-1,self.dim))
-
-        percentiles = np.ones((self.samples.shape[-1],3)) #(4,3) # 4 params, 3 percentiles
-        for i in range(self.samples.shape[-1]):
-            percentiles[i,:] = np.percentile(self.samples[:, :, i], [16, 50, 84])
-        self.percentiles = percentiles
+        self.getpercentiles()
 
         if save:
             self.savechain()
 
         return sampler
 
+    def getpercentiles(self):
+        """From the burn-in version of the chain, get percentiles"""
+        percentiles = np.ones((self.samples.shape[-1],3)) #(4,3) # 4 params, 3 percentiles
+        for i in range(self.samples.shape[-1]):
+            percentiles[i,:] = np.percentile(self.samples[:, :, i], [16, 50, 84])
+        self.percentiles = percentiles
+        
+        self.bestfitp = {}
+        self.bestfitp['I0'] = percentiles[0,1]
+        self.bestfitp['x0'] = percentiles[1,1]
+        self.bestfitp['y0'] = percentiles[2,1]
+        self.bestfitp['r1'] = percentiles[3,1]
+        # Default params
+        self.bestfitp['k_exp'] = 0; self.bestfitp['off'] = 0
+
     def savechain(self):
         """Called by runMCMC if save=True"""
-
-
         chainpath = f"{self.output_dir}{self.imname.replace('.fits','')}_chain.fits"
         hdu      = fits.PrimaryHDU()
         # Save entire chain without burn in period removed
@@ -261,6 +292,9 @@ class MCMCfitter(object):
         hdu = self.set_sampler_header(hdu)
         print(f"Saving chain to {chainpath}")
         hdu.writeto(chainpath, overwrite=True)
+
+        # Save the sampler header in the class
+        self.sampler_header = hdu.header
         return
 
     def set_sampler_header(self, hdu):
@@ -282,13 +316,82 @@ class MCMCfitter(object):
 
         return hdu
 
+    def loadMCMC(self):
+        """Load chain from a previous run"""
+        chainpath = f"{self.output_dir}{self.imname.replace('.fits','')}_chain.fits"
+        with fits.open(chainpath) as hdu:
+            self.sampler_chain = hdu[0].data
+            self.sampler_header = hdu[0].header
+            # remove burnin
+            self.samples = self.sampler_chain[:, self.sampler_header['burntime']:, :]
+        self.getpercentiles()
+
     def print_bestfitparams(self):
         """
         After runMCMC() call this to print best fit params
         """
         for i in range(self.dim):
             low, mid, up = self.percentiles[i]
-            print(f"{self.labels[i]} = {mid:.1f}^+{(up-mid):.1f}_-{(mid-low):.1f}")
+            if i == 0:
+                print(f"{self.labels[i]} = {mid:.1E}^+{(up-mid):.1E}_-{(mid-low):.1E}")
+            else:
+                print(f"{self.labels[i]} = {mid:.1F}^+{(up-mid):.1E}_-{(mid-low):.1E}")
+
+    def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None):
+        """Plot the data-model-residual plot"""
+        if plotregrid:
+            print("TODO")
+
+        else:
+
+            data = self.data_original
+            model = self.circle_model(self.bestfitp, returnfull=True)
+            residual = data-model
+
+            if vmin is None:
+                vmin = -2.*self.iminfo['imagerms']
+            if vmax is None:
+                vmax = 25.*self.iminfo['imagerms']
+            NORMres = mplc.Normalize(vmin=vmin, vmax=vmax)
+
+            fig, axes = plt.subplots(ncols=3, nrows=1, sharey=True)
+            fig.set_size_inches(3.2*5,5.1)
+
+            im0 = axes[0].imshow(data,cmap='inferno', origin='lower', norm = NORMres)
+            axes[0].set_title("Data")
+            # Add and remove such that panels are same size
+            cbar = fig.colorbar(im0,ax=axes[0],fraction=0.046, pad=0.04)
+            # cbar.remove()
+            plt.tight_layout()
+
+            im1 = axes[1].imshow(model,cmap='inferno', origin='lower', norm = NORMres)
+            axes[1].set_title("Model")
+            # Add and remove such that panels are same size
+            cbar = fig.colorbar(im1,ax=axes[1],fraction=0.046, pad=0.04)
+            # cbar.remove()
+            plt.tight_layout()
+
+            im2 = axes[2].imshow(residual,cmap='inferno', origin='lower', norm = NORMres)
+            axes[2].set_title("Residual = Data - Model")
+            cbar = fig.colorbar(im2,ax=axes[2],fraction=0.046, pad=0.04)
+            cbar.set_label("Intensity [Jy beam$^{-1}$]")
+            plt.tight_layout()
+
+
+            axes[0].set_ylabel('Pixels')
+            for ax in axes.flat:
+                ax.set_xlabel('Pixels')
+
+            fig.subplots_adjust(hspace=0.01)
+            if savefig is not None: plt.savefig(savefig.replace('.pdf','_residual.pdf'))
+            # plt.show()
+            plt.close()
+
+    def convert_units(self):
+        """Convert from pixel units to physical units"""
+        return "TODO"
+
+
 
 
 def lnprob(theta, data, info, modelf):
@@ -337,20 +440,21 @@ def lnprior(theta, info):
         radii = np.array([theta['r1']])
     return prior
 
-def plotMCMC(samples, pinit, savefig=None):
+def plotMCMC(samples, pinit, savefig=None, show=False):
     """
     Plot MCMC chain and initial guesses
     """
-    labels = ['I0', 'x0', 'y0', 'r_e']
+    labels = ['$I_0$', '$x_0$', '$y_0$', '$r_e$']
     dim = samples.shape[-1]
 
     ########## CORNER PLOT ###########
+    fig = plt.figure(figsize=(6.64*2,6.64*2*0.74))
     fig = corner.corner(samples.reshape((-1,dim)),labels=labels, quantiles=[0.160, 0.5, 0.840],
                         truths=pinit, # plot blue line at inital value
-                        show_titles=True, title_fmt='.5f')
+                        show_titles=True, title_fmt='.5f', fig=fig)
     
     if savefig is not None: plt.savefig(savefig.replace('.pdf','_corner.pdf'))
-    plt.show()
+    if show: plt.show()
     plt.close()
 
     ########## PLOT WALKERS ###########
@@ -367,19 +471,15 @@ def plotMCMC(samples, pinit, savefig=None):
         plt.tick_params(labelsize=15)
 
     if savefig is not None: plt.savefig(savefig.replace('.pdf','_walkers.pdf'))
-    plt.show()
+    if show: plt.show()
     plt.close()
 
 def rotate_image(data, iminfo):
     """Rotate image
+    data   -- 2d array   -- Should have no NaNs 
     iminfo -- dictionary -- Should have beam position angle 'bpa' 
+
     """
-
-    ### Jort puts any np.nan to zero before rotation. 
-    ### because otherwise whole image is nan. 
-
-    ### TODO: in case of NaN make sure we put also values to 0
-
     img_rot = ndimage.rotate(data, -iminfo['bpa'].value, reshape=False)
     return img_rot
 

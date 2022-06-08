@@ -16,11 +16,9 @@ import argparse
 
 import FDCA
 
-
-####
-
 from astropy.io import fits
 import matplotlib.pyplot as plt
+FDCA.utils.paper_fig_params()
 
 """
 
@@ -49,7 +47,7 @@ Everything in pixel coordinates.
                              ### Save a new mask that is 1 wherever the value is np.nan
                              ### then also rotate and regrid this new mask
                              ### and input into MCMC only the values that are not masked.
- -. Then save the chain
+ -. Then save the chain # DONE
 
  -. Then convert the output to physical coordinates.
 
@@ -73,10 +71,16 @@ if __name__ == '__main__':
 
 
     # image = '/home/osingae/Documents/phd/Abell2256/test_halofitting/halotest_noise.fits'
-    image = '/home/osingae/Documents/phd/Abell2256/images/Abell2256_23MHz.int.restored.zoomhalo_mask.fits'
+    # image = '/home/osingae/Documents/phd/Abell2256/images/Abell2256_23MHz.int.restored.zoomhalo_mask.fits'
+    
+    image = '/home/osingae/Documents/phd/Abell2256/images/Abell2256_23MHz.int.restored.zoom.fits'
     mask = '/home/osingae/Documents/phd/Abell2256/halo_unrelated_sources_kamlesh.reg'
+    maskoutside = '/home/osingae/Documents/phd/Abell2256/Halo_main_LBA_region_Kamlesh.reg'
+
     regrid=True
     output_dir = './output/'
+    run_MCMC = False
+    curvefit = run_MCMC
 
     # I0, x0, y0, r_e  (#Jy/beam, pixel, pixel, pixel)
     # p0 = [1, 660, 423, 20] ## USER INITIAL GUESS: TODO MAKE ARGUMENT 
@@ -88,24 +92,34 @@ if __name__ == '__main__':
 
     # Initialise the fitter
     fitter = FDCA.mcmc_eo.MCMCfitter(image, rms
-        , mask=mask, regrid=regrid, output_dir=output_dir)
+        , mask=mask, regrid=regrid, output_dir=output_dir
+        , maskoutside=maskoutside)
 
-    if True:
+    if curvefit:
         # Get first guess from curve_fit
         pinit = fitter.pre_mcmc_fit(p0)
         print(f"Initial guess from curve_fit: {pinit}")
     else:
-        pinit = np.array([1.0,600,400,40])
-        print(f"Initial guess for MCMC: {pinit}")
+        pinit = np.array(p0)
+        if run_MCMC: print(f"User initial guess for MCMC: {pinit}")
 
-    self=fitter
+    self=fitter ## For testing purposes
 
-    sampler = fitter.runMCMC(pinit, walkers=200, steps=1000)
+    if run_MCMC:
+        sampler = fitter.runMCMC(pinit, walkers=8, steps=100)
+    else:
+        sampler = fitter.loadMCMC()
+
     fitter.print_bestfitparams()
-
     savefig = fitter.plotdir + image.split('/')[-1].replace('.fits','.pdf')
+
+    # Corner plot and sampler chain plot
     FDCA.mcmc_eo.plotMCMC(fitter.samples, pinit, savefig=savefig)
 
-    # import sys
-    # sys.exit("\nFinished")
+    fitter.plot_data_model_residual(savefig=savefig)
 
+    # Convert params to RA,DEC and r_e in kpc. Also calculate total flux
+    
+
+
+    # Calculate chi2

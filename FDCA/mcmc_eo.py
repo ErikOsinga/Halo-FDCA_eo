@@ -44,27 +44,30 @@ utils.paper_fig_params()
 class MCMCfitter(object):
     """MCMC fitter class
 
-    image  -- str   -- location of fits image
-    rms    -- float -- rms in Jy/beam
-    regrid -- bool  -- whether to regrid to 1pix=1beam
-    mask   -- str   -- mask file to remove sources
+    image      -- str   -- location of fits image
+    rms        -- float -- rms in Jy/beam
+    regrid     -- bool  -- whether to regrid to 1pix=1beam
+    mask       -- str   -- mask file to remove sources
+    rms_region -- str   -- where to calculate the (regridded) rms 
     """
-    def __init__(self, image, rms, regrid=True, mask=None, output_dir='./output/', maskoutside=None, redshift=0.058):
+    def __init__(self, image, rms, regrid=True, mask=None, output_dir='./output/', maskoutside=None, redshift=0.058, rms_region=None):
         self.image = image
         self.regrid = regrid # whether to regrid to 1 pixel approx 1 beam
         self.mask = mask
         self.maskoutside = maskoutside
         self.output_dir = output_dir
         self.redshift = redshift
+        self.rms_region = rms_region # Only needed if we want chi2 value
+
         self.dim = 4 # Circle model
         self.labels = ['$I_0$', '$x_0$', '$y_0$', '$r_e$']
-
-        # Bookkeeping of settings and directories
-        self.check_settings()
 
         # Load the image file, WCS information and other handy conversions
         # Note pickling WCS gives WARNING: https://github.com/astropy/astropy/issues/12834
         self.data_original, self.wcs1, self.iminfo  = self.loadfitsim(image, rms)
+
+        # Bookkeeping of settings and directories
+        self.check_settings()
     
         # Bookkeeping, store the data to use as self.data_mcmc 
         # and the mask as self.wherefinite
@@ -80,6 +83,20 @@ class MCMCfitter(object):
         self.imname = self.image.split('/')[-1]
         print(f"Using image {self.imname}")
 
+        if self.rms_region is not None:
+            ### Calculate RMS inside the region
+
+            w = self.wcs1
+            while w.naxis > 2: # in case the wcs is 4 axes
+                w = w.dropaxis(-1)
+            self.rms_original = calculate_rms(self.data_original, w, self.rms_region)
+
+            factor = self.rms_original / self.iminfo['imagerms']
+            if 0.5 < factor < 2.0:
+                pass
+            else:
+                print (f"WARNING: User defined rms {self.iminfo['imagerms']} is significantly ({factor}x) different from rms {self.rms_original} found inside the provided region") 
+        
         ## TODO: log
 
     def loadfitsim(self, image, rms):
@@ -88,6 +105,8 @@ class MCMCfitter(object):
             data = hdul[0].data
             header = hdul[0].header
             wcs1 = wcs.WCS(header)
+            while wcs1.naxis > 2: # in case the wcs is 4 axes
+                wcs1 = wcs1.dropaxis(-1)
 
         # Dealing with the fact that .fits files can have 2 or 4 axes
         data = check_datashape(data)
@@ -151,10 +170,7 @@ class MCMCfitter(object):
         """
 
         data_masked = np.copy(data)
-        
-        w = self.wcs1
-        while w.naxis > 2: # in case the wcs is 4 axes
-            w = w.dropaxis(-1)
+        w = self.wcs1 # with 2 axes only
         
         if self.mask is not None:
             print (f"Masking regions {self.mask}")
@@ -266,24 +282,65 @@ class MCMCfitter(object):
         # nwalkers by nsteps-burnin by number of parameters: (12,300,4)
         self.samples = self.sampler_chain[:,self.burntime:,:]#.reshape((-1,self.dim))
         self.getpercentiles()
+        self.calculate_chi2()
 
         if save:
             self.savechain()
 
         return sampler
 
+    def regridded_rms(self):
+        """To calculate the chi2 value, we need to get the RMS in the regridded image"""
+
+        # So we need to have a user defined region where we can calculate the RMS
+        # regrid that region [T/F mask], and re-calculate the RMS in the re-gridded data in that region
+
+        r = Regions.read(self.rms_region)
+        rmask = r[0].to_pixel(self.wcs1).to_mask()
+        # True where inside region, 0 where not, same shape as data
+        whererms = np.array(rmask.to_image(self.data_original.shape),dtype='bool')
+
+        # Regrid this region
+        self.whererms = regridding(whererms, self.iminfo, func=np.max)
+        # Regrid original data. 
+        data_original_rebin = np.copy(self.data_original)
+        # Make sure there's no nans
+        if np.isnan(data_original_rebin).any():
+            print("WARNING: NaNs found in the input image")
+            data_original_rebin[np.isnan(data_original_rebin)] = 0
+
+        data_original_rebin = regridding(data_original_rebin, self.iminfo)
+        rmsregion = data_original_rebin[self.whererms]
+
+        self.rms_regrid = np.sqrt(1./len(rmsregion)*np.sum(rmsregion**2))
+        return self.rms_regrid
+
     def calculate_chi2(self):
         """Calculate (reduced) chi2 value"""
 
         # Naive guess of number of DOF = len(data) - len(parameters)
-        DOF = len(self.data_mcmc) - self.dim
+        self.DOF = len(self.data_mcmc) - self.dim
         
         # Best fit model in 1D
         model = self.circle_model(self.bestfitp, returnfull=False)
 
-        self.chi2 = np.sum( ((self.data_mcmc-model)/(self.rmsregrid))**2. )
+        # Caveat: to get a good value of chi2, we need to know the error per pixel
+        # If we are regridding, the rms is hard to determine analytically
+        # So we need a user provided region to calculate the rms
+        if self.regrid:
+            if self.rms_region is None:
+                raise ValueError("Need a region where the RMS is calculated to calculate the chi2 value")
 
+            rms = self.regridded_rms()
+        else:
+            # If we are not regridding, the pixels are not independent, not great.
+            rms = self.iminfo['imagerms'] # Just use image rms input by user
 
+        self.chi2 = np.sum( ((self.data_mcmc-model)/(rms))**2. )
+        self.chi2_red = self.chi2/self.DOF
+
+        print(f"chi2 value: {self.chi2:.1F} | DOF = {self.DOF:.1F} | chi2/DOF = {self.chi2_red:.1F}")
+        return 
 
     def getpercentiles(self):
         """From the burn-in version of the chain, get percentiles"""
@@ -319,12 +376,16 @@ class MCMCfitter(object):
         hdu.header['steps']    = (self.steps)
         hdu.header['dim']      = (self.dim)
         hdu.header['burntime'] = (self.burntime)
+        hdu.header['regrid']   = (self.regrid)
         hdu.header['OBJECT']   = (self.imname,'Input fits file')
         hdu.header['IMAGE']    = (self.image)
         hdu.header['UNIT_0'] = ('JY/beam','unit of fit parameter 0')
         hdu.header['UNIT_1'] = ('PIX','unit of fit parameter 1')
         hdu.header['UNIT_2'] = ('PIX','unit of fit parameter 2')
         hdu.header['UNIT_3'] = ('PIX','unit of fit parameter 3')
+        hdu.header['chi2']   = (self.chi2)
+        hdu.header['DOF']    = (self.DOF)
+        hdu.header['chi2_red'] = (self.chi2_red) 
 
         for i in range(len(self.theta_guess)):
             hdu.header['INIT_'+str(i)] = (self.theta_guess[i], 'MCMC initial guess')
@@ -342,6 +403,7 @@ class MCMCfitter(object):
             # remove burnin
             self.samples = self.sampler_chain[:, self.sampler_header['burntime']:, :]
         self.getpercentiles()
+        self.calculate_chi2()
 
     def print_bestfitparams(self, percentiles):
         """
@@ -471,13 +533,10 @@ def lnL(theta, data, info, modelf):
     """
     Log likelihood, inputting a vector of parameters and data
     """   
-
-    ## TODO: rotation
-    # kwargs = {"rotate" : True}
-    # raw_model = info['_func_'](info,coord,theta,**kwargs)*u.Jy
-    # model = set_model_to_use(info, raw_model)
-
     model = modelf(theta)
+
+    ## NOTE THAT IF WE REGRID, imagerms IS WRONG. 
+    ## BUT BECAUSE IT'S A CONSTANT, AND WE MAXIMIZE THE LIKELIHOOD, IT DOESNT MATTER
     return -np.sum( ((data-model)**2.)/(2*info['imagerms']**2.)\
                         + np.log(np.sqrt(2*np.pi)*info['imagerms']) )
 
@@ -657,3 +716,34 @@ def image_info(header, imagerms):
         # "gamma_prior":       obj.gamma_prior,
         }
     return image_info
+
+def findrms(data, niter=100, maskSup=1e-7):
+    m      = data[np.abs(data)>maskSup]
+    rmsold = np.std(m)
+    diff   = 1e-1
+    cut    = 3.
+    bins   = np.arange(np.min(m),np.max(m),(np.max(m)-np.min(m))/30.)
+    med    = np.median(m)
+
+    for i in range(niter):
+        ind = np.where(np.abs(m-med)<rmsold*cut)[0]
+        rms = np.std(m[ind])
+        if np.abs((rms-rmsold)/rmsold)<diff: break
+        rmsold = rms
+    return rms
+
+def calculate_rms(data, wcs, regionfile):
+    """Calculate RMS in the region provided by the user"""
+    
+    r = Regions.read(regionfile)
+    if len(r)>1:
+        raise ValueError(f"{len(r)} regions found in RMS region file. Expected 1.")
+    
+    rmask = r[0].to_pixel(wcs).to_mask()
+    # True where inside region, 0 where not, same shape as data
+    rmask = np.array(rmask.to_image(data.shape),dtype='bool')
+    # calculate rms inside the region
+    data_region = data[rmask]
+    rms = np.sqrt (1./len(data_region) * np.sum(data_region**2))
+
+    return rms

@@ -78,6 +78,7 @@ if __name__ == '__main__':
     image = '/home/osingae/Documents/phd/Abell2256/images/Abell2256_23MHz.int.restored.zoom.fits'
     mask = '/home/osingae/Documents/phd/Abell2256/halo_unrelated_sources_kamlesh.reg'
     maskoutside = '/home/osingae/Documents/phd/Abell2256/Halo_main_LBA_region_Kamlesh.reg'
+    rms_region = '/home/osingae/Documents/phd/Abell2256/rmsregion_23MHz.reg'
 
     regrid=True
     output_dir = './output/'
@@ -96,7 +97,8 @@ if __name__ == '__main__':
     # Initialise the fitter
     fitter = FDCA.mcmc_eo.MCMCfitter(image, rms
         , mask=mask, regrid=regrid, output_dir=output_dir
-        , maskoutside=maskoutside, redshift=redshift)
+        , maskoutside=maskoutside, redshift=redshift
+        , rms_region=rms_region)
 
     if curvefit:
         # Get first guess from curve_fit

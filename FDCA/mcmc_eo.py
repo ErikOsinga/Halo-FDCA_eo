@@ -329,7 +329,8 @@ class MCMCfitter(object):
         # So we need a user provided region to calculate the rms
         if self.regrid:
             if self.rms_region is None:
-                raise ValueError("Need a region where the RMS is calculated to calculate the chi2 value")
+                print("WARNING: Cannot calculate chi2 value. Need a region where the RMS is calculated to calculate the chi2 value.")
+                return -1
 
             rms = self.regridded_rms()
         else:
@@ -411,6 +412,7 @@ class MCMCfitter(object):
         """
         unitstr = ['Jy/beam', 'pixel', 'pixel','pixel'] # in case no units
         
+        print("============")
         for i in range(self.dim):
             low, mid, up = percentiles[i]
 
@@ -423,6 +425,7 @@ class MCMCfitter(object):
                 print(f"{self.labels[i]} = {mid:.1E}^+{(up-mid):.1E}_-{(mid-low):.1E} {unitstr[i]}")
             else:
                 print(f"{self.labels[i]} = {mid:.1F}^+{(up-mid):.1E}_-{(mid-low):.1E} {unitstr[i]}")
+        print("============\n")
 
     def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None):
         """Plot the data-model-residual plot"""
@@ -504,12 +507,28 @@ class MCMCfitter(object):
             percentiles_units.append(np.percentile(samples[:, :], [16, 50, 84]))
         self.percentiles_units = percentiles_units
 
-        # Integrated up to infinity
-        totalflux = 2*np.pi*self.samples_I0_kpc*self.samples_re**2
-        # Integrating up to 2.6 r_e  *= 0.73
-        print(f"Best-fit total flux density is {np.median(totalflux):.1f}")
 
-        print ("TODO: check whether total flux calculation is correct")
+    def totalflux(self, d=np.inf, rkpc=None):
+        """
+        Can only be ran after convert_units() is called. 
+        """
+
+        if rkpc is not None:
+            # Integrating up to a certain amount of kpc 
+            d = (rkpc*u.kpc/self.percentiles_units[3][1]).to(1).value
+            print (f"User defined: integrating up to {rkpc:.1f} kpc = {d:.1f}r_e")
+
+        if d == np.inf:
+            # Integrated up to infinity
+            totalflux = 2*np.pi*self.samples_I0_kpc*self.samples_re**2
+            print(f"Best-fit total flux density is {np.median(totalflux):.1f} integrated up to infinity")
+        else:
+            # Integrating up to a certain fraction of r_e
+            totalflux = 2*np.pi*self.samples_I0_kpc*self.samples_re**2
+            totalflux *= (1-np.exp(-d) *(d+1)) # e.g. d=2.6 gives fraction of 0.73
+            print(f"Best-fit total flux density is {np.median(totalflux):.1f} integrated up to {d:.1f}r_e")
+
+        return totalflux
 
 def lnprob(theta, data, info, modelf):
     """

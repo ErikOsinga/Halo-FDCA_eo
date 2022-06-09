@@ -8,8 +8,24 @@ import astropy.units as u
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from regions import Regions
+from scipy.optimize import leastsq
 
 colorcycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+def argsfromfile(bashfile):
+    """Read args from bashfile for interactive python usage"""
+    with open(bashfile) as f:
+        foundcall = False
+        while not foundcall:
+            line = f.readline()
+            if 'python' in line:
+                foundcall = True
+
+        line = line.strip('\n')
+        # Assumes first two words are 'python HaloFitting_eo.py'
+        arguments = ' '.join(line.split(' ')[2:])
+
+    return arguments
 
 def paper_fig_params(TW=6.64, AR=0.74, FF=1., fontsize=16.0, fontst=["Times New Roman"
                     ,"Computer Modern Roman", "STIXGeneral"]):
@@ -88,6 +104,8 @@ def radialprofile(data, header=None, wcs=None, RA=None, DEC=None, x0_pix=None, y
     
     # Define inner radii at the annuli
     r = np.arange(1,pixradius,step=width)
+    # take as the radius of the annulus the half-way point between inner and outer
+    r_annulus = r+width/2
 
     # function to calculate the mean at inner radius r until r+width
     # i.e. the average intensity
@@ -106,4 +124,74 @@ def radialprofile(data, header=None, wcs=None, RA=None, DEC=None, x0_pix=None, y
         print("WARNING: RMS or amount of pixels in 1 beam not given. Cannot calculate uncertainty on radial profile.") 
         uncertainty = -1
 
-    return r, mean, uncertainty # In pixels, Jy/beam, Jy/beam
+
+
+    return r_annulus, mean, uncertainty # In pixels, Jy/beam, Jy/beam
+
+def stokesImodel(p, nu):
+    """
+    Simple power-law model 
+        I = I0*nu**alpha
+    """
+    I0 = p[0]
+    alpha = p[1]
+    return I0 * nu**(alpha)
+
+def stokesImodelcurved(p, nu):
+    """
+    Curved power law model (log-parabolic) See Eq. 8 gabri paper
+    """
+    nu_ref = 1. # 1 GHz for simplicity.
+
+    I0 = p[0]
+    alpha = p[1]
+    b = p[2]
+    return I0*nu**(alpha+b*np.log10(nu/nu_ref))
+
+def fit_spix(stokesI, noiseI, nu,  curvature=False, uncertainty=False, model=None, guess=None):
+    """
+    Do a least square fit of Stokes I data with a simple power law model
+    stokesI   -- array -- array with fluxes
+    noiseI    -- array -- array with uncertainty on fluxes
+    nu        -- array -- array with Freq where fluxes are measured
+    curvature -- bool  -- whether to use curved model
+
+    Returns
+    pbest -- best fit parameters for model. [I0, alpha, (b)]
+    chi2  -- best fit chi2 value
+    """
+    Iguess = np.mean(stokesI)
+
+    if model is None:
+        # Use implemented models
+        if curvature:
+            guess = [Iguess, -1.0, 0]
+            model = stokesImodelcurved
+        else:
+            guess= [Iguess, -1.0] #I0, alpha
+            model = stokesImodel
+
+    else:
+        if guess is None:
+            raise ValueError("When giving model manually, also give guess for bestfit params")
+            
+    # Chi2 error, but not squared
+    errfunc = lambda p, nu, fluxI, errI: (fluxI - model(p, nu))/errI
+
+    out = leastsq(errfunc, guess
+                        , args=(nu, stokesI, noiseI), full_output=True)
+    pbest = out[0]
+    pbest_invH = out[1]
+
+    dof = len(nu)-len(pbest) # dof = number of obs - number of fitted params
+    
+    chi2red = np.sum(errfunc(pbest, nu, stokesI, noiseI)**2)/dof
+
+    if uncertainty:
+        # also return the inverse of the Hessian
+        # To obtain the covariance matrix of the parameters
+        # multiply this with the variance of the residuals. 
+        # See scipy.optimize.leastsq documentation
+        return pbest, chi2red, pbest_invH
+
+    return pbest, chi2red

@@ -38,7 +38,7 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean type expected.')
 
-def newargparse():
+def newargparse(bashfile=None):
     parser = argparse.ArgumentParser(description='Halo-FDCA (basic version!): An automated MCMC fitter for radio halos in galaxy clusters. (methods from Boxelaar et al. 2021)')
 
     # Required arguments
@@ -61,15 +61,27 @@ def newargparse():
     parser.add_argument('-run_MCMC',      help='(bool) Whether to run a MCMC routine or skip it to go straight to processing. can be done if a runned sample already exists in the output path. Default: True',default=True, type=str2bool)
     parser.add_argument('-curvefit',      help='(bool) Whether to do a simple fit to get an initial guess for MCMC or just use the user input guess. Default: True',default=True, type=str2bool)
     parser.add_argument('-d_int',         help='(float) Fraction of r_e far to integrate the model up to. Default=2.6',default=2.6, type=float)
+    parser.add_argument('-d_int_kpc',     help='(float) Radius to integrate the model up to in kpc. Default=None',default=None, type=float)
 
-    args = parser.parse_args()
+    if bashfile is None:
+        args = parser.parse_args()
+    else:
+        argsfromfile = FDCA.utils.argsfromfile(bashfile)
+        args = parser.parse_args(argsfromfile.split(' '))
+
     args.puser = [args.p0, args.p1, args.p2, args.p3]
     return args
 
 
 if __name__ == '__main__':
 
-    args = newargparse()
+    # args = newargparse()
+
+    #### If user wants to call this from ipython uncomment these two lines
+    # bashfile = 'plot23.sh'
+    bashfile = 'plot46.sh'
+    # bashfile = 'plot144.sh'
+    args = newargparse(bashfile)
 
     # Initialise the fitter
     fitter = FDCA.mcmc_eo.MCMCfitter(args.image, args.rms
@@ -110,12 +122,13 @@ if __name__ == '__main__':
     print("Best fit params in physical units")
     fitter.print_bestfitparams(fitter.percentiles_units)
     # calculate total flux
-    totalflux = fitter.totalflux(args.d_int)
+    totalflux = fitter.totalflux(args.d_int, args.d_int_kpc)
     ########## CONVERT TO PHYSICAL UNITS ##########
 
     ########## ADDITIONAL PLOTTING DIAGNOSTICS ##########
     fitter.plot_1D(d=3.0, savefig=savefig)
 
 
+    # FDCA.plotting.compare_annuli():
 
     ########## ADDITIONAL PLOTTING DIAGNOSTICS ##########

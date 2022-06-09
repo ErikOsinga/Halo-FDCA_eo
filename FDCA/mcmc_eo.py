@@ -542,7 +542,7 @@ class MCMCfitter(object):
             plt.close()
         return
 
-    def plot_1D(self, d=3.0, savefig=None, plotconvolvedmodel=False, show=False):
+    def plot_1D(self, d=3.0, savefig=None, plotconvolvedmodel=False, show=False, close=True):
         """Plot 1D annulus and model"""
 
         # width of annuli should be 1 beam
@@ -577,8 +577,8 @@ class MCMCfitter(object):
         ####### Calculate analytical profile
         I0 = self.bestfitp['I0'] # mind that this one is Jy/b
         r_e = self.bestfitp_units['r1'].to(u.kpc).value # and this one is kpc
-        radius_kpc_anaytical = np.linspace(np.min(radius_kpc),np.max(radius_kpc),100)
-        analytical = I0 * np.exp(-radius_kpc_anaytical/r_e)
+        radius_kpc_analytical = np.linspace(np.min(radius_kpc),np.max(radius_kpc),100)
+        analytical = I0 * np.exp(-radius_kpc_analytical/r_e)
 
         ####### Calculate chi2 between average in annulus and analytical model
         analytical_at_data = I0 * np.exp(-radius_kpc/r_e)
@@ -595,24 +595,39 @@ class MCMCfitter(object):
         elw = 1 # error line width
         plt.errorbar(radius_kpc, profile, yerr=uncertainty
             ,marker='s', markeredgecolor='k', color='C0', markersize=msize
-            ,elinewidth=elw,alpha=1.0,capsize=3.0, label='Data')
-        plt.plot(radius_kpc_anaytical, analytical,color='C1',label='Best-fit model')
+            ,elinewidth=elw,alpha=1.0,capsize=3.0, label='Data',zorder=0)
+        plt.plot(radius_kpc_analytical, analytical,color='C1',label='Best-fit model',zorder=1)
         if plotconvolvedmodel:
             plt.plot(radius_kpc, modelprofile
-                ,color='C2',label='Best-fit convolved model')
-        plt.axvline(r_e,ls='dashed',color='k',alpha=0.5,label=f'$r_e$={r_e:.0f} kpc')
+                ,color='C2',label='Best-fit convolved model',zorder=2)
 
-        plt.xlabel('Annulus inner radius [kpc]')
+        
+        plt.axvline(r_e,ls='dashed',color='k',alpha=0.5,label=f'$r_e$={r_e:.0f} kpc',zorder=3)
+
+        plt.xlabel('Annulus central radius [kpc]')
         plt.ylabel('Average Intensity [Jy/beam]')
         plt.legend(ncol=2)
         plt.xscale('log')
         plt.yscale('log')
+        xlim = np.array(plt.xlim())
+        # Start plot xlim at least at 10 kpc and end at least at 1000 kpc
+        if xlim[0] > 1e1:
+            xlim[0] = 0.9e1
+        if xlim[1] < 1e3:
+            xlim[1] = 1.1e3
+        plt.xlim(xlim)
+
         if savefig is not None: plt.savefig(savefig.replace('.pdf','_annulus.pdf'))
         if show: plt.show()
-        plt.close()
+        if close: plt.close()
 
-
-
+        # Store values in class
+        self.radius_annuli = radius_kpc
+        self.data_annuli = profile
+        self.uncertainty_annuli = uncertainty
+        self.radius_annuli_model = radius_kpc_analytical
+        self.model_annuli = analytical
+        self.r_e = r_e
 
 def lnprob(theta, data, info, modelf):
     """Log posterior, inputting a vector of parameters and data"""    

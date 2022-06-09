@@ -51,6 +51,8 @@ def newargparse():
     parser.add_argument('-p3',            help="(float) User initial guess for parameter r_e. In PIXEL coordinates.", default = None, type=float, required=True)
     parser.add_argument('-redshift',      help='(float) cluster redshift', type=float, required=True)
     # Optional arguments
+    parser.add_argument('-nwalkers',      help='(int) Amount of walkers. Default 200',default=200, type=int)
+    parser.add_argument('-steps',         help='(int) Amount of steps.  Default=1000',default=1000, type=int)
     parser.add_argument('-output_dir',    help='(str) Path to output. Default: ./output/', default='./output/', type=str)
     parser.add_argument('-mask',          help='(str) Mask file location (.reg). Mask sources INSIDE these regions. Default: None', default=None, type=str)
     parser.add_argument('-maskoutside',   help='(str) Mask file location (.reg). Mask everything OUTSIDE this region. Default: None', default=None, type=str)
@@ -84,7 +86,7 @@ if __name__ == '__main__':
         if args.run_MCMC: print(f"User initial guess for MCMC: {pinit}")
     if args.run_MCMC:
         print ("\n Running MCMC")
-        sampler = fitter.runMCMC(pinit, walkers=8, steps=100)
+        sampler = fitter.runMCMC(pinit, walkers=args.nwalkers, steps=args.steps)
     else:
         print ("\n Loading previous results")
         sampler = fitter.loadMCMC()

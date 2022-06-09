@@ -3,6 +3,14 @@
 
 '''
 Author: Erik Osinga, heavily borrowed from Jort Boxelaar HALO-FDCA
+
+
+TODO: 
+
+ -. Implement the logging.
+
+ -. Implement other models than circle ### BIG TODO.
+
 '''
 
 from astropy.coordinates import SkyCoord
@@ -20,45 +28,6 @@ from astropy.io import fits
 import matplotlib.pyplot as plt
 FDCA.utils.paper_fig_params()
 
-"""
-
-
-Plan: 
-
-1. First just try to get the MCMC working on the test image. 
-Everything in pixel coordinates. 
-
-/home/osingae/Documents/phd/Abell2256/test_halofitting/halotest.fits
- 
- -. Then think about the initial guesses: ##### DONE. CURVE_FIT. 
-
- -. Then regrid data to beam size? ##### DONE. 
-            # DATA regridding now happens inside the model, so the x0 and y0 and r_e
-            # are in pixel coords. 
-
- -. Test what happens to NaNs ##### DONE. THEY ARE IGNORED
-
- -. Then think about masking # DONE 
-                             ###  Set any values in the mask to np.nan
-                             ### Save a new mask that is 1 wherever the value is np.nan
-                             ### then also rotate and regrid this new mask
-                             ### and input into MCMC only the values that are not masked.
- -. Then save the chain # DONE
-
- -. Then convert the output to physical coordinates. ## DONE
-
- -. Then calculate chi2 ## DONE, IMPROVED FROM JORTS CASE I THINK
-
- -. Then implement arguments  ### DONE
-
- -. Then implement the logging.
-
- -. Then implement rotation wrt the beam. ## DONE
-
- -. Finally implement other models than circle ## BIG TODO.
-
-"""
-
 def str2bool(v):
     if isinstance(v, bool):
        return v
@@ -74,12 +43,12 @@ def newargparse():
 
     # Required arguments
     parser.add_argument('image',          help='(str) FITS image location.', type=str)
-    parser.add_argument('-rms',           help="RMS in FITS image. In Jy/beam.", type=float, required=True)
-    parser.add_argument('-p0',            help="User initial guess for parameter I_0. In Jy/beam.", type=float, required=True)
+    parser.add_argument('-rms',           help="(float) RMS in FITS image. In Jy/beam.", type=float, required=True)
+    parser.add_argument('-p0',            help="(float) User initial guess for parameter I_0. In Jy/beam.", type=float, required=True)
     # Note that X,Y in ds9 coordinates indeed corresponds in the code to p1,p2 (x0,y0)
-    parser.add_argument('-p1',            help="User initial guess for parameter x_0. In PIXEL coordinates.", default = None, type=float, required=True)
-    parser.add_argument('-p2',            help="User initial guess for parameter y_0. In PIXEL coordinates.", default = None, type=float, required=True)
-    parser.add_argument('-p3',            help="User initial guess for parameter r_e. In PIXEL coordinates.", default = None, type=float, required=True)
+    parser.add_argument('-p1',            help="(float) User initial guess for parameter x_0. In PIXEL coordinates.", default = None, type=float, required=True)
+    parser.add_argument('-p2',            help="(float) User initial guess for parameter y_0. In PIXEL coordinates.", default = None, type=float, required=True)
+    parser.add_argument('-p3',            help="(float) User initial guess for parameter r_e. In PIXEL coordinates.", default = None, type=float, required=True)
     parser.add_argument('-redshift',      help='(float) cluster redshift', type=float, required=True)
     # Optional arguments
     parser.add_argument('-output_dir',    help='(str) Path to output. Default: ./output/', default='./output/', type=str)
@@ -89,11 +58,10 @@ def newargparse():
     parser.add_argument('-regrid',        help='(bool) Whether to regrid and rotate image to 1 beam = 1 pix. Default: True',default=True, type=str2bool)
     parser.add_argument('-run_MCMC',      help='(bool) Whether to run a MCMC routine or skip it to go straight to processing. can be done if a runned sample already exists in the output path. Default: True',default=True, type=str2bool)
     parser.add_argument('-curvefit',      help='(bool) Whether to do a simple fit to get an initial guess for MCMC or just use the user input guess. Default: True',default=True, type=str2bool)
+    parser.add_argument('-d_int',         help='(float) Fraction of r_e far to integrate the model up to. Default=2.6',default=2.6, type=float)
 
     args = parser.parse_args()
-
     args.puser = [args.p0, args.p1, args.p2, args.p3]
-
     return args
 
 
@@ -122,8 +90,6 @@ if __name__ == '__main__':
         sampler = fitter.loadMCMC()
     ########## FITTING ##########
 
-    self=fitter ## For testing purposes
-
     ########## PROCESSING ##########
     print("Best fit params in image units")
     fitter.print_bestfitparams(fitter.percentiles)
@@ -135,7 +101,6 @@ if __name__ == '__main__':
     fitter.plot_data_model_residual(savefig=savefig)
     ########## PROCESSING ##########
 
-
     ########## CONVERT TO PHYSICAL UNITS ##########
     # Convert params to RA,DEC and r_e in kpc.
     fitter.convert_units()
@@ -143,5 +108,12 @@ if __name__ == '__main__':
     print("Best fit params in physical units")
     fitter.print_bestfitparams(fitter.percentiles_units)
     # calculate total flux
-    totalflux = fitter.totalflux(d=2.6)
+    totalflux = fitter.totalflux(args.d_int)
     ########## CONVERT TO PHYSICAL UNITS ##########
+
+    ########## ADDITIONAL PLOTTING DIAGNOSTICS ##########
+    fitter.plot_1D(d=3.0, savefig=savefig)
+
+
+
+    ########## ADDITIONAL PLOTTING DIAGNOSTICS ##########

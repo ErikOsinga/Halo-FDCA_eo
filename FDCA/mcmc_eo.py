@@ -334,7 +334,9 @@ class MCMCfitter(object):
 
             rms = self.regridded_rms()
         else:
-            # If we are not regridding, the pixels are not independent, not great.
+            print("WARNING: If self.regrid=False, then chi2 value will be wrong. Can still use for model comparison. Perhaps better to look at the chi2 of the annulus plot.")
+            # WARNING: If we are not regridding, the pixels are not independent
+            # So DOF is (greatly) overestimated.
             rms = self.iminfo['imagerms'] # Just use image rms input by user
 
         self.chi2 = np.sum( ((self.data_mcmc-model)/(rms))**2. )
@@ -427,10 +429,72 @@ class MCMCfitter(object):
                 print(f"{self.labels[i]} = {mid:.1F}^+{(up-mid):.1E}_-{(mid-low):.1E} {unitstr[i]}")
         print("============\n")
 
+    def convert_units(self):
+        """Convert from pixel units to physical units"""
+
+        # samples with removed burnin, with units.
+        self.samples_I0 = self.samples[:, :, 0] * u.Jy # in Jy/beam
+        # From Jy/beam to Jy/arcsec^2
+        self.samples_I0 /= self.iminfo['beam_area']
+        self.samples_I0 = self.samples_I0.to(u.Jy/u.arcsec**2)
+
+        # From pixel to RA, DEC
+        self.samples_x0, self.samples_y0 = self.wcs1.celestial.wcs_pix2world(self.samples[:, :, 1],self.samples[:, :, 2],1)
+        # In units of degrees
+        self.samples_x0 *= u.deg; self.samples_y0 *= u.deg
+
+        # From pixel to arcsec
+        self.samples_re = self.samples[:, :, 3] * self.iminfo['pix_size'].to(u.arcsec)
+        # From arcsec to kpc
+        self.samples_re *= cosmo.kpc_proper_per_arcmin(self.redshift).to(u.kpc/u.arcsec)
+
+        # Calculate total flux density
+        # From Jy/arcsec**2 to Jy/kpc**2
+        self.samples_I0_kpc = self.samples_I0 / (cosmo.kpc_proper_per_arcmin(self.redshift).to(u.kpc/u.arcsec)**2)
+        
+        percentiles_units = np.ones((self.samples.shape[-1],3)) #(4,3) # 4 params, 3 percentiles
+        percentiles_units = [] #List of quantities: (4,3) # 4 params, 3 percentiles
+        for i, samples in enumerate([self.samples_I0,self.samples_x0,self.samples_y0, self.samples_re]):
+            # percentiles_units[i,:] = np.percentile(samples[:, :], [16, 50, 84])
+            percentiles_units.append(np.percentile(samples[:, :], [16, 50, 84]))
+        self.percentiles_units = percentiles_units
+
+        # Also save best fit params with physical units in a dictionary
+        self.bestfitp_units = {}
+        self.bestfitp_units['I0'] = percentiles_units[0][1]
+        self.bestfitp_units['x0'] = percentiles_units[1][1]
+        self.bestfitp_units['y0'] = percentiles_units[2][1]
+        self.bestfitp_units['r1'] = percentiles_units[3][1]
+        # Default params
+        self.bestfitp_units['k_exp'] = 0; self.bestfitp_units['off'] = 0
+
+    def totalflux(self, d=np.inf, rkpc=None):
+        """
+        Can only be ran after convert_units() is called. 
+        """
+
+        if rkpc is not None:
+            # Integrating up to a certain amount of kpc 
+            d = (rkpc*u.kpc/self.percentiles_units[3][1]).to(1).value
+            print (f"User defined: integrating up to {rkpc:.1f} kpc = {d:.1f}r_e")
+
+        if d == np.inf:
+            # Integrated up to infinity
+            totalflux = 2*np.pi*self.samples_I0_kpc*self.samples_re**2
+            print(f"Best-fit total flux density is {np.median(totalflux):.1f} integrated up to infinity")
+        else:
+            # Integrating up to a certain fraction of r_e
+            totalflux = 2*np.pi*self.samples_I0_kpc*self.samples_re**2
+            totalflux *= (1-np.exp(-d) *(d+1)) # e.g. d=2.6 gives fraction of 0.73
+            print(f"Best-fit total flux density is {np.median(totalflux):.1f} integrated up to {d:.1f}r_e")
+
+        return totalflux
+
     def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None):
         """Plot the data-model-residual plot"""
         if plotregrid:
-            print("TODO")
+            print("TODO: Plot regridded versions")
+            return
 
         else:
 
@@ -476,64 +540,82 @@ class MCMCfitter(object):
             if savefig is not None: plt.savefig(savefig.replace('.pdf','_residual.pdf'))
             # plt.show()
             plt.close()
+        return
 
-    def convert_units(self):
-        """Convert from pixel units to physical units"""
+    def plot_1D(self, d=3.0, savefig=None, plotconvolvedmodel=False, show=False):
+        """Plot 1D annulus and model"""
 
-        # samples with removed burnin, with units.
-        self.samples_I0 = self.samples[:, :, 0] * u.Jy # in Jy/beam
-        # From Jy/beam to Jy/arcsec^2
-        self.samples_I0 /= self.iminfo['beam_area']
-        self.samples_I0 = self.samples_I0.to(u.Jy/u.arcsec**2)
+        # width of annuli should be 1 beam
+        width = (self.iminfo['bmaj'])/self.iminfo['pix_size']
+        # in pixel coords
+        width = width.to(1).value
 
-        # From pixel to RA, DEC
-        self.samples_x0, self.samples_y0 = self.wcs1.celestial.wcs_pix2world(self.samples[:, :, 1],self.samples[:, :, 2],1)
-        # In units of degrees
-        self.samples_x0 *= u.deg; self.samples_y0 *= u.deg
+        # Amount of pixels in 1 beam:
+        NpixIn1Beam = (self.iminfo['beam_area']/self.iminfo['pix_size']**2).value
 
-        # From pixel to arcsec
-        self.samples_re = self.samples[:, :, 3] * self.iminfo['pix_size'].to(u.arcsec)
-        # From arcsec to kpc
-        self.samples_re *= cosmo.kpc_proper_per_arcmin(self.redshift).to(u.kpc/u.arcsec)
+        ####### Calculate profile on the (masked) version of the original data
+        radius, profile, uncertainty = utils.radialprofile(self.data_original, wcs=self.wcs1
+            , x0_pix=self.bestfitp['x0'], y0_pix=self.bestfitp['y0']
+            , maskoutside=self.maskoutside, maskinside=self.mask
+            , pixradius=self.bestfitp['r1']*d, width=width, rms=self.iminfo['imagerms']
+            , NpixIn1Beam=NpixIn1Beam)
 
-        # Calculate total flux density
-        # From Jy/arcsec**2 to Jy/kpc**2
-        self.samples_I0_kpc = self.samples_I0 / (cosmo.kpc_proper_per_arcmin(self.redshift).to(u.kpc/u.arcsec)**2)
-        
-        percentiles_units = np.ones((self.samples.shape[-1],3)) #(4,3) # 4 params, 3 percentiles
-        percentiles_units = [] #List of quantities: (4,3) # 4 params, 3 percentiles
-        for i, samples in enumerate([self.samples_I0,self.samples_x0,self.samples_y0, self.samples_re]):
-            # percentiles_units[i,:] = np.percentile(samples[:, :], [16, 50, 84])
-            percentiles_units.append(np.percentile(samples[:, :], [16, 50, 84]))
-        self.percentiles_units = percentiles_units
+        # Convert radius from pixel to kpc
+        radius_kpc = radius * self.iminfo['pix_size'].to(u.arcsec) # From pixel to arcsec
+        radius_kpc *= cosmo.kpc_proper_per_arcmin(self.redshift).to(u.kpc/u.arcsec) # From arcsec to kpc
+        radius_kpc = radius_kpc.to(u.kpc).value
+
+        ####### Calculate profile on the best-fit smoothed model
+        model = self.circle_model(self.bestfitp, returnfull=True)
+
+        _, modelprofile, _ = utils.radialprofile(model, wcs=self.wcs1
+            , x0_pix=self.bestfitp['x0'], y0_pix=self.bestfitp['y0']
+            , maskoutside=self.maskoutside, maskinside=self.mask
+            , pixradius=self.bestfitp['r1']*d, width=width, rms=self.iminfo['imagerms']
+            , NpixIn1Beam=NpixIn1Beam)
+
+        ####### Calculate analytical profile
+        I0 = self.bestfitp['I0'] # mind that this one is Jy/b
+        r_e = self.bestfitp_units['r1'].to(u.kpc).value # and this one is kpc
+        radius_kpc_anaytical = np.linspace(np.min(radius_kpc),np.max(radius_kpc),100)
+        analytical = I0 * np.exp(-radius_kpc_anaytical/r_e)
+
+        ####### Calculate chi2 between average in annulus and analytical model
+        analytical_at_data = I0 * np.exp(-radius_kpc/r_e)
+        residuals = analytical_at_data-profile
+        self.chi2_annulus = np.sum( (residuals/uncertainty)**2 )
+        self.DOF_annulus = len(radius_kpc)-4 
+        self.chi2_red_annulus = self.chi2_annulus/self.DOF_annulus
+
+        print(f"Radial profile chi2 value: {self.chi2_annulus:.1F} | DOF = {self.DOF_annulus:.1F} | chi2/DOF = {self.chi2_red_annulus:.1F}")
+
+        ####### Plot
+        msize = 4 #marker size
+        mew = 1 # marker edge width
+        elw = 1 # error line width
+        plt.errorbar(radius_kpc, profile, yerr=uncertainty
+            ,marker='s', markeredgecolor='k', color='C0', markersize=msize
+            ,elinewidth=elw,alpha=1.0,capsize=3.0, label='Data')
+        plt.plot(radius_kpc_anaytical, analytical,color='C1',label='Best-fit model')
+        if plotconvolvedmodel:
+            plt.plot(radius_kpc, modelprofile
+                ,color='C2',label='Best-fit convolved model')
+        plt.axvline(r_e,ls='dashed',color='k',alpha=0.5,label=f'$r_e$={r_e:.0f} kpc')
+
+        plt.xlabel('Annulus inner radius [kpc]')
+        plt.ylabel('Average Intensity [Jy/beam]')
+        plt.legend(ncol=2)
+        plt.xscale('log')
+        plt.yscale('log')
+        if savefig is not None: plt.savefig(savefig.replace('.pdf','_annulus.pdf'))
+        if show: plt.show()
+        plt.close()
 
 
-    def totalflux(self, d=np.inf, rkpc=None):
-        """
-        Can only be ran after convert_units() is called. 
-        """
 
-        if rkpc is not None:
-            # Integrating up to a certain amount of kpc 
-            d = (rkpc*u.kpc/self.percentiles_units[3][1]).to(1).value
-            print (f"User defined: integrating up to {rkpc:.1f} kpc = {d:.1f}r_e")
-
-        if d == np.inf:
-            # Integrated up to infinity
-            totalflux = 2*np.pi*self.samples_I0_kpc*self.samples_re**2
-            print(f"Best-fit total flux density is {np.median(totalflux):.1f} integrated up to infinity")
-        else:
-            # Integrating up to a certain fraction of r_e
-            totalflux = 2*np.pi*self.samples_I0_kpc*self.samples_re**2
-            totalflux *= (1-np.exp(-d) *(d+1)) # e.g. d=2.6 gives fraction of 0.73
-            print(f"Best-fit total flux density is {np.median(totalflux):.1f} integrated up to {d:.1f}r_e")
-
-        return totalflux
 
 def lnprob(theta, data, info, modelf):
-    """
-    Log posterior, inputting a vector of parameters and data
-    """    
+    """Log posterior, inputting a vector of parameters and data"""    
 
     # TODO: make this better?
     theta = {'I0':theta[0], 'x0':theta[1],'y0':theta[2],'r1':theta[3]}
@@ -549,9 +631,7 @@ def lnprob(theta, data, info, modelf):
     return lnL(theta, data, info, modelf) + lp
 
 def lnL(theta, data, info, modelf):
-    """
-    Log likelihood, inputting a vector of parameters and data
-    """   
+    """Log likelihood, inputting a vector of parameters and data"""   
     model = modelf(theta)
 
     ## NOTE THAT IF WE REGRID, imagerms IS WRONG. 
@@ -560,6 +640,7 @@ def lnL(theta, data, info, modelf):
                         + np.log(np.sqrt(2*np.pi)*info['imagerms']) )
 
 def lnprior(theta, info):
+    """Log prior, checks the boundaries of the params"""
     prior = -np.inf
     if (theta['I0'] > 0) and (-0.4 < theta['k_exp'] < 19):
         if (0 <= theta['x0'] < info['xsize']) and (0 <= theta['y0'] < info['ysize']):
@@ -573,45 +654,10 @@ def lnprior(theta, info):
         radii = np.array([theta['r1']])
     return prior
 
-def plotMCMC(samples, pinit, savefig=None, show=False):
-    """
-    Plot MCMC chain and initial guesses
-    """
-    labels = ['$I_0$', '$x_0$', '$y_0$', '$r_e$']
-    dim = samples.shape[-1]
-
-    ########## CORNER PLOT ###########
-    fig = plt.figure(figsize=(6.64*2,6.64*2*0.74))
-    fig = corner.corner(samples.reshape((-1,dim)),labels=labels, quantiles=[0.160, 0.5, 0.840],
-                        truths=pinit, # plot blue line at inital value
-                        show_titles=True, title_fmt='.5f', fig=fig)
-    
-    if savefig is not None: plt.savefig(savefig.replace('.pdf','_corner.pdf'))
-    if show: plt.show()
-    plt.close()
-
-    ########## PLOT WALKERS ###########
-    fig, axes = plt.subplots(ncols=1, nrows=dim, sharex=True)
-    axes[0].set_title('Number of walkers: '+str(len(samples)))
-    for axi in axes.flat:
-        axi.yaxis.set_major_locator(plt.MaxNLocator(3))
-        fig.set_size_inches(2*10,15)
-
-    for i in range(dim):
-        axes[i].plot(samples[:, :, i].transpose(),
-                                        color='black', alpha=0.3)
-        axes[i].set_ylabel('param '+str(i+1), fontsize=15)
-        plt.tick_params(labelsize=15)
-
-    if savefig is not None: plt.savefig(savefig.replace('.pdf','_walkers.pdf'))
-    if show: plt.show()
-    plt.close()
-
 def rotate_image(data, iminfo):
     """Rotate image
     data   -- 2d array   -- Should have no NaNs 
     iminfo -- dictionary -- Should have beam position angle 'bpa' 
-
     """
     img_rot = ndimage.rotate(data, -iminfo['bpa'].value, reshape=False)
     return img_rot
@@ -657,27 +703,6 @@ def regridding(data, iminfo, func=np.sum):
     regrid   = regrid_to_beamsize(data_rot, iminfo, func=func)
     return regrid
 
-
-def plottwofigures(data1, data2, savefig=None, titles=['',''],show=False):
-    """
-    For checking stuff
-    """
-
-    fig, axes = plt.subplots(1,2)
-
-    for i, data in enumerate([data1,data2]):
-        im = axes[i].imshow(data,origin='lower')
-        cbar = fig.colorbar(im,ax=axes[i])
-        axes[i].set_title(titles[i])
-
-    if savefig is not None:
-        plt.savefig(savefig)
-    if show:
-        plt.show()
-    else:
-        plt.close()
-    return
-
 def check_createdir(directory):
     if not os.path.isdir(directory):
         print(f'Creating directory {directory}')
@@ -699,6 +724,7 @@ def check_datashape(data):
     raise ValueError(f"Data shape {data.shape} not recognised.")
 
 def image_info(header, imagerms):
+    """Returns a dictionary with all image information in one place"""
     bmaj      = header['BMAJ']*u.deg
     bmin      = header['BMIN']*u.deg
     bpa       = header['BPA']*u.deg
@@ -720,40 +746,11 @@ def image_info(header, imagerms):
         "ysize":             header['NAXIS2'],
         "max_radius":        header['NAXIS1']*2,
         "imagerms":          imagerms, # in Jy/beam at the moment
-        # print("TODO")
-        # "pix2kpc":           pix2kpc,
-        # "mask":              obj.mask,
-        # "sigma":             obj.mcmc_noise,
-        # "margin":            margin,
-        # "_func_":            obj._func_mcmc,
-        # "image_mask":        obj.image_mask,
-        # "binned_image_mask": obj.binned_image_mask,
-        # "mask_treshold":     obj.mask_treshold,
-        # "max_radius":        obj.max_radius,
-        # "params":            obj.params,
-        # "paramNames":        obj.paramNames,
-        # "gamma_prior":       obj.gamma_prior,
         }
     return image_info
 
-def findrms(data, niter=100, maskSup=1e-7):
-    m      = data[np.abs(data)>maskSup]
-    rmsold = np.std(m)
-    diff   = 1e-1
-    cut    = 3.
-    bins   = np.arange(np.min(m),np.max(m),(np.max(m)-np.min(m))/30.)
-    med    = np.median(m)
-
-    for i in range(niter):
-        ind = np.where(np.abs(m-med)<rmsold*cut)[0]
-        rms = np.std(m[ind])
-        if np.abs((rms-rmsold)/rmsold)<diff: break
-        rmsold = rms
-    return rms
-
 def calculate_rms(data, wcs, regionfile):
     """Calculate RMS in the region provided by the user"""
-    
     r = Regions.read(regionfile)
     if len(r)>1:
         raise ValueError(f"{len(r)} regions found in RMS region file. Expected 1.")
@@ -764,5 +761,58 @@ def calculate_rms(data, wcs, regionfile):
     # calculate rms inside the region
     data_region = data[rmask]
     rms = np.sqrt (1./len(data_region) * np.sum(data_region**2))
-
     return rms
+
+def plotMCMC(samples, pinit, savefig=None, show=False):
+    """
+    Plot MCMC chain and initial guesses
+    """
+    labels = ['$I_0$', '$x_0$', '$y_0$', '$r_e$']
+    dim = samples.shape[-1]
+
+    ########## CORNER PLOT ###########
+    fig = plt.figure(figsize=(6.64*2,6.64*2*0.74))
+    fig = corner.corner(samples.reshape((-1,dim)),labels=labels, quantiles=[0.160, 0.5, 0.840],
+                        truths=pinit, # plot blue line at inital value
+                        show_titles=True, title_fmt='.5f', fig=fig)
+    
+    if savefig is not None: plt.savefig(savefig.replace('.pdf','_corner.pdf'))
+    if show: plt.show()
+    plt.close()
+
+    ########## PLOT WALKERS ###########
+    fig, axes = plt.subplots(ncols=1, nrows=dim, sharex=True)
+    axes[0].set_title('Number of walkers: '+str(len(samples)))
+    for axi in axes.flat:
+        axi.yaxis.set_major_locator(plt.MaxNLocator(3))
+        fig.set_size_inches(2*10,15)
+
+    for i in range(dim):
+        axes[i].plot(samples[:, :, i].transpose(),
+                                        color='black', alpha=0.3)
+        axes[i].set_ylabel('param '+str(i+1), fontsize=15)
+        plt.tick_params(labelsize=15)
+
+    if savefig is not None: plt.savefig(savefig.replace('.pdf','_walkers.pdf'))
+    if show: plt.show()
+    plt.close()
+
+def plottwofigures(data1, data2, savefig=None, titles=['',''],show=False):
+    """
+    For checking stuff
+    """
+
+    fig, axes = plt.subplots(1,2)
+
+    for i, data in enumerate([data1,data2]):
+        im = axes[i].imshow(data,origin='lower')
+        cbar = fig.colorbar(im,ax=axes[i])
+        axes[i].set_title(titles[i])
+
+    if savefig is not None:
+        plt.savefig(savefig)
+    if show:
+        plt.show()
+    else:
+        plt.close()
+    return

@@ -62,10 +62,13 @@ def newargparse(bashfile=None):
     parser.add_argument('-curvefit',      help='(bool) Whether to do a simple fit to get an initial guess for MCMC or just use the user input guess. Default: True',default=True, type=str2bool)
     parser.add_argument('-d_int',         help='(float) Fraction of r_e far to integrate the model up to. Default=2.6',default=2.6, type=float)
     parser.add_argument('-d_int_kpc',     help='(float) Radius to integrate the model up to in kpc. Default=None',default=None, type=float)
+    parser.add_argument('-presentation',  help='(bool) Plot transparent figures. Default: False',default=False, type=str2bool)
+    parser.add_argument('-saveradial',    help='(bool) Whether to save the radial profile. Default: False',default=False, type=str2bool)
 
     if bashfile is None:
         args = parser.parse_args()
     else:
+        print(f"WARNING: LOADING PARAMETERS FROM FILE {bashfile}")
         argsfromfile = FDCA.utils.argsfromfile(bashfile)
         args = parser.parse_args(argsfromfile.split(' '))
 
@@ -75,13 +78,14 @@ def newargparse(bashfile=None):
 
 if __name__ == '__main__':
 
-    # args = newargparse()
+    args = newargparse()
 
     #### If user wants to call this from ipython uncomment these two lines
     # bashfile = 'plot23.sh'
-    bashfile = 'plot46.sh'
+    # bashfile = 'plot46.sh'
     # bashfile = 'plot144.sh'
-    args = newargparse(bashfile)
+    # bashfile = 'plot144_kamlesh.sh'
+    # args = newargparse(bashfile)
 
     # Initialise the fitter
     fitter = FDCA.mcmc_eo.MCMCfitter(args.image, args.rms
@@ -112,7 +116,7 @@ if __name__ == '__main__':
     # Corner plot and sampler chain plot
     FDCA.mcmc_eo.plotMCMC(fitter.samples, pinit, savefig=savefig) 
     # Data-model-residual plot
-    fitter.plot_data_model_residual(savefig=savefig)
+    fitter.plot_data_model_residual(savefig=savefig, presentation=args.presentation)
     ########## PROCESSING ##########
 
     ########## CONVERT TO PHYSICAL UNITS ##########
@@ -126,7 +130,12 @@ if __name__ == '__main__':
     ########## CONVERT TO PHYSICAL UNITS ##########
 
     ########## ADDITIONAL PLOTTING DIAGNOSTICS ##########
-    fitter.plot_1D(d=3.0, savefig=savefig)
+    if args.saveradial:
+        saveradial = fitter.output_dir + args.image.split('/')[-1].replace('.fits','_dataprofile.npy')
+    else:
+        saveradial = None
+
+    fitter.plot_1D(d=3.0, d_int_kpc=None, savefig=savefig, saveradial=saveradial)
 
 
     # FDCA.plotting.compare_annuli():

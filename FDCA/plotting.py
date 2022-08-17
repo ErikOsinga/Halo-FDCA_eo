@@ -57,41 +57,39 @@ def compare_annuliplots(fitters, colors=['C0','C1','C2']
     plt.xscale('log')
     plt.yscale('log')
 
-def compare_fluxmodels(fitters, d_int=2.6, d_int_kpc=1000, frac_unc=0.1):
+def compare_fluxmodels(fitters, d_int=2.6, d_int_kpc=1300, frac_unc=0.1):
+    """Calculate total flux within region and calc spectral index"""
 
-    for d_int_kpc in [100,200,400,600,800,1000,1300]:
-        print(d_int_kpc)
+    fluxes = []
+    unces = []
+    freqs = np.array([23e6,46e6,144e6])
+    for i, fitter in enumerate(fitters):
+        totalflux = np.median(fitter.totalflux(d_int, d_int_kpc)).value
+        unc = frac_unc*totalflux
 
-        fluxes = []
-        unces = []
-        freqs = np.array([23e6,46e6,144e6])
-        for i, fitter in enumerate(fitters):
-            totalflux = np.median(fitter.totalflux(d_int, d_int_kpc)).value
-            unc = frac_unc*totalflux
+        fluxes.append(totalflux)
+        unces.append(unc)
 
-            fluxes.append(totalflux)
-            unces.append(unc)
+    fluxes = np.array(fluxes)
+    unces = np.array(unces)
 
-        fluxes = np.array(fluxes)
-        unces = np.array(unces)
+    # pbest, chi2red = utils.fit_spix(fluxes, unces, freqs)
+    pbest, chi2red = fit_spix(fluxes, unces, freqs)
+    I0, alpha = pbest
+    print ("Best alpha for model %i is: %.2f with chi2red: %.1f"%(i,pbest[1],chi2red))
 
-        # pbest, chi2red = utils.fit_spix(fluxes, unces, freqs)
-        pbest, chi2red = fit_spix(fluxes, unces, freqs)
-        I0, alpha = pbest
-        print ("Best alpha for model %i is: %.2f with chi2red: %.1f"%(i,pbest[1],chi2red))
-
-        # plot data
-        fig, ax = plt.subplots()
-        ax.errorbar(freqs/1e6,fluxes,yerr=unces,color='k'
-            ,capsize=3.0,elinewidth=elw,zorder=2,markersize=msize, alpha=1.0, linestyle='none'
-            ,marker='o',label=labels[i])
-        # plot model
-        freqs_model = np.logspace(np.log10(np.min(freqs-1e6)),np.log10(np.max(freqs+1e6)))
-        bestmodel = stokesImodel(pbest, freqs_model)
-        label = None
-        ax.plot(freqs_model/1e6,bestmodel,ls='dashed',label=label,color='C0',zorder=1,alpha=1.0)    
-        ax.set_yscale('log')
-        ax.set_xscale('log')
-        ax.set_xlabel('Frequency [MHz]')
-        ax.set_ylabel('Total flux density [Jy]')
-        plt.legend()
+    # plot data
+    fig, ax = plt.subplots()
+    ax.errorbar(freqs/1e6,fluxes,yerr=unces,color='k'
+        ,capsize=3.0,elinewidth=elw,zorder=2,markersize=msize, alpha=1.0, linestyle='none'
+        ,marker='o',label=labels[i])
+    # plot model
+    freqs_model = np.logspace(np.log10(np.min(freqs-1e6)),np.log10(np.max(freqs+1e6)))
+    bestmodel = stokesImodel(pbest, freqs_model)
+    label = None
+    ax.plot(freqs_model/1e6,bestmodel,ls='dashed',label=label,color='C0',zorder=1,alpha=1.0)    
+    ax.set_yscale('log')
+    ax.set_xscale('log')
+    ax.set_xlabel('Frequency [MHz]')
+    ax.set_ylabel('Total flux density [Jy]')
+    plt.legend()

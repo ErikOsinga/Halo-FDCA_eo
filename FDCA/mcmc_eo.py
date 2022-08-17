@@ -80,6 +80,9 @@ class MCMCfitter(object):
         self.plotdir = self.output_dir + 'Plots/'
         check_createdir(self.plotdir)
 
+        self.plotdir_png = self.output_dir + 'Plots/pngs/'
+        check_createdir(self.plotdir_png)
+
         self.imname = self.image.split('/')[-1]
         print(f"Using image {self.imname}")
 
@@ -490,7 +493,7 @@ class MCMCfitter(object):
 
         return totalflux
 
-    def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None):
+    def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None, presentation=False):
         """Plot the data-model-residual plot"""
         if plotregrid:
             print("TODO: Plot regridded versions")
@@ -511,24 +514,34 @@ class MCMCfitter(object):
             fig, axes = plt.subplots(ncols=3, nrows=1, sharey=True)
             fig.set_size_inches(3.2*5,5.1)
 
+            transparent = False
+            titlecolor = 'k'
+            if presentation:
+                utils.white_axes(axes)
+                transparent = True
+                titlecolor='w'
+
             im0 = axes[0].imshow(data,cmap='inferno', origin='lower', norm = NORMres)
-            axes[0].set_title("Data")
+            axes[0].set_title("Data",color=titlecolor)
             # Add and remove such that panels are same size
             cbar = fig.colorbar(im0,ax=axes[0],fraction=0.046, pad=0.04)
+            cbar.ax.tick_params(axis='both', colors=titlecolor,which='both')
             # cbar.remove()
             plt.tight_layout()
 
             im1 = axes[1].imshow(model,cmap='inferno', origin='lower', norm = NORMres)
-            axes[1].set_title("Model")
+            axes[1].set_title("Model",color=titlecolor)
             # Add and remove such that panels are same size
             cbar = fig.colorbar(im1,ax=axes[1],fraction=0.046, pad=0.04)
+            cbar.ax.tick_params(axis='both', colors=titlecolor,which='both')
             # cbar.remove()
             plt.tight_layout()
 
             im2 = axes[2].imshow(residual,cmap='inferno', origin='lower', norm = NORMres)
-            axes[2].set_title("Residual = Data - Model")
+            axes[2].set_title("Residual = Data - Model",color=titlecolor)
             cbar = fig.colorbar(im2,ax=axes[2],fraction=0.046, pad=0.04)
-            cbar.set_label("Intensity [Jy beam$^{-1}$]")
+            cbar.ax.tick_params(axis='both', colors=titlecolor,which='both')
+            cbar.set_label("Intensity [Jy beam$^{-1}$]",color=titlecolor)
             plt.tight_layout()
 
 
@@ -537,13 +550,16 @@ class MCMCfitter(object):
                 ax.set_xlabel('Pixels')
 
             fig.subplots_adjust(hspace=0.01)
-            if savefig is not None: plt.savefig(savefig.replace('.pdf','_residual.pdf'))
+            if savefig is not None: plt.savefig(savefig.replace('.pdf','_residual.pdf'),transparent=transparent)
             # plt.show()
             plt.close()
         return
 
-    def plot_1D(self, d=3.0, savefig=None, plotconvolvedmodel=False, show=False, close=True):
+    def plot_1D(self, d=3.0, d_int_kpc=None, savefig=None, plotconvolvedmodel=False, show=False, close=True, presentation=False, saveradial=None):
         """Plot 1D annulus and model"""
+
+        if d_int_kpc is not None:
+            d = (d_int_kpc*u.kpc/self.percentiles_units[3][1]).to(1).value
 
         # width of annuli should be 1 beam
         width = (self.iminfo['bmaj'])/self.iminfo['pix_size']
@@ -583,13 +599,19 @@ class MCMCfitter(object):
         ####### Calculate chi2 between average in annulus and analytical model
         analytical_at_data = I0 * np.exp(-radius_kpc/r_e)
         residuals = analytical_at_data-profile
-        self.chi2_annulus = np.sum( (residuals/uncertainty)**2 )
-        self.DOF_annulus = len(radius_kpc)-4 
+        self.chi2_annulus = np.nansum( (residuals/uncertainty)**2 )
+        self.DOF_annulus = np.sum(np.isfinite(residuals))-4 # Number of (valid) datapoints - params
         self.chi2_red_annulus = self.chi2_annulus/self.DOF_annulus
 
         print(f"Radial profile chi2 value: {self.chi2_annulus:.1F} | DOF = {self.DOF_annulus:.1F} | chi2/DOF = {self.chi2_red_annulus:.1F}")
 
         ####### Plot
+        fig = plt.figure()
+        transparent = False
+        if presentation:
+            utils.white_axes()
+            transparent = True
+
         msize = 4 #marker size
         mew = 1 # marker edge width
         elw = 1 # error line width
@@ -617,7 +639,11 @@ class MCMCfitter(object):
             xlim[1] = 1.1e3
         plt.xlim(xlim)
 
-        if savefig is not None: plt.savefig(savefig.replace('.pdf','_annulus.pdf'))
+        if savefig is not None: 
+            plt.savefig(savefig.replace('.pdf','_annulus.pdf'),transparent=transparent)
+            # also save as png
+            savefig = savefig.replace('/Plots/','/Plots/pngs/')
+            plt.savefig(savefig.replace('.pdf','_annulus.png'),transparent=transparent)
         if show: plt.show()
         if close: plt.close()
 
@@ -628,6 +654,9 @@ class MCMCfitter(object):
         self.radius_annuli_model = radius_kpc_analytical
         self.model_annuli = analytical
         self.r_e = r_e
+
+        if saveradial is not None:
+            np.save(saveradial, np.array([radius_kpc, profile, uncertainty]))
 
 def lnprob(theta, data, info, modelf):
     """Log posterior, inputting a vector of parameters and data"""    

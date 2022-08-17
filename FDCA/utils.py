@@ -124,8 +124,6 @@ def radialprofile(data, header=None, wcs=None, RA=None, DEC=None, x0_pix=None, y
         print("WARNING: RMS or amount of pixels in 1 beam not given. Cannot calculate uncertainty on radial profile.") 
         uncertainty = -1
 
-
-
     return r_annulus, mean, uncertainty # In pixels, Jy/beam, Jy/beam
 
 def stokesImodel(p, nu):
@@ -195,3 +193,19 @@ def fit_spix(stokesI, noiseI, nu,  curvature=False, uncertainty=False, model=Non
         return pbest, chi2red, pbest_invH
 
     return pbest, chi2red
+
+def white_axes(axes=None):
+    """ Set everything to white, which is nice with dark background"""
+    if axes is None:
+        # assume 1 axis
+        axes = [plt.gca()]
+
+    for ax in axes:
+        ax.spines['bottom'].set_color('white')
+        ax.spines['top'].set_color('white')
+        ax.spines['left'].set_color('white')
+        ax.spines['right'].set_color('white')
+        ax.xaxis.label.set_color('white')
+        ax.yaxis.label.set_color('white')
+        ax.tick_params(axis='both', colors='white',which='both')
+        ax.tick_params(axis='x', colors='white')

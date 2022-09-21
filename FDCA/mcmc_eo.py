@@ -21,6 +21,7 @@ from scipy.special import gammainc, gamma
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize, LogNorm
 import matplotlib.colors as mplc
+from astropy.visualization import SqrtStretch, ImageNormalize, ManualInterval
 
 from skimage.measure import block_reduce
 from skimage.transform import rescale
@@ -493,7 +494,7 @@ class MCMCfitter(object):
 
         return totalflux
 
-    def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None, presentation=False):
+    def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None, presentation=False, sqrtstretch=True):
         """Plot the data-model-residual plot"""
         if plotregrid:
             print("TODO: Plot regridded versions")
@@ -509,7 +510,12 @@ class MCMCfitter(object):
                 vmin = -2.*self.iminfo['imagerms']
             if vmax is None:
                 vmax = 25.*self.iminfo['imagerms']
-            NORMres = mplc.Normalize(vmin=vmin, vmax=vmax)
+
+            if sqrtstretch:
+                NORMres = ImageNormalize(data, ManualInterval(vmin,vmax), stretch=SqrtStretch())
+            else:
+                NORMres = mplc.Normalize(vmin=vmin, vmax=vmax)
+
 
             fig, axes = plt.subplots(ncols=3, nrows=1, sharey=True)
             fig.set_size_inches(3.2*5,5.1)

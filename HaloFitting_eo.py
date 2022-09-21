@@ -56,7 +56,7 @@ def newargparse(bashfile=None):
     parser.add_argument('-output_dir',    help='(str) Path to output. Default: ./output/', default='./output/', type=str)
     parser.add_argument('-mask',          help='(str) Mask file location (.reg). Mask sources INSIDE these regions. Default: None', default=None, type=str)
     parser.add_argument('-maskoutside',   help='(str) Mask file location (.reg). Mask everything OUTSIDE this region. Default: None', default=None, type=str)
-    parser.add_argument('-rms_region',     help='(str) Region file location (.reg). Used to calculate the RMS. Necessary if user wants chi2 value when regrid=True. Default: None', default=None, type=str)
+    parser.add_argument('-rms_region',    help='(str) Region file location (.reg). Used to calculate the RMS. Necessary if user wants chi2 value when regrid=True. Default: None', default=None, type=str)
     parser.add_argument('-regrid',        help='(bool) Whether to regrid and rotate image to 1 beam = 1 pix. Default: True',default=True, type=str2bool)
     parser.add_argument('-run_MCMC',      help='(bool) Whether to run a MCMC routine or skip it to go straight to processing. can be done if a runned sample already exists in the output path. Default: True',default=True, type=str2bool)
     parser.add_argument('-curvefit',      help='(bool) Whether to do a simple fit to get an initial guess for MCMC or just use the user input guess. Default: True',default=True, type=str2bool)

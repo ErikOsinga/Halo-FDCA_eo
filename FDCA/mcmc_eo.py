@@ -37,6 +37,7 @@ cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
 import emcee
 import corner
 from regions import Regions
+import pyregion # for plotting regions
 
 from . import utils
 utils.paper_fig_params()
@@ -428,7 +429,9 @@ class MCMCfitter(object):
                 low, mid, up = low.value, mid.value, up.value
 
             if i == 0:
-                print(f"{self.labels[i]} = {mid:.1E}^+{(up-mid):.1E}_-{(mid-low):.1E} {unitstr[i]}")
+                print(f"{self.labels[i]} = {mid:.3E}^+{(up-mid):.1E}_-{(mid-low):.1E} {unitstr[i]}")
+            elif i == 1 or i == 2:
+                print(f"{self.labels[i]} = {mid:.5F}^+{(up-mid):.1E}_-{(mid-low):.1E} {unitstr[i]}")
             else:
                 print(f"{self.labels[i]} = {mid:.1F}^+{(up-mid):.1E}_-{(mid-low):.1E} {unitstr[i]}")
         print("============\n")
@@ -494,7 +497,7 @@ class MCMCfitter(object):
 
         return totalflux
 
-    def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None, presentation=False, sqrtstretch=True):
+    def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None, presentation=False, sqrtstretch=True, add1D=True):
         """Plot the data-model-residual plot"""
         if plotregrid:
             print("TODO: Plot regridded versions")
@@ -509,17 +512,32 @@ class MCMCfitter(object):
             if vmin is None:
                 vmin = -2.*self.iminfo['imagerms']
             if vmax is None:
-                vmax = 25.*self.iminfo['imagerms']
+                if sqrtstretch:
+                    vmax = 40.*self.iminfo['imagerms']
+                else:
+                    vmax = 25.*self.iminfo['imagerms']
 
             if sqrtstretch:
                 NORMres = ImageNormalize(data, ManualInterval(vmin,vmax), stretch=SqrtStretch())
             else:
                 NORMres = mplc.Normalize(vmin=vmin, vmax=vmax)
 
+            # Load mask
+            r = pyregion.open(self.mask).as_imagecoord(header=self.iminfo['header'])
+            patch_list, _ = r.get_mpl_patches_texts()
 
-            fig, axes = plt.subplots(ncols=3, nrows=1, sharey=True)
-            fig.set_size_inches(3.2*5,5.1)
+            # Load mask_outside
+            r_out = pyregion.open(self.maskoutside).as_imagecoord(header=self.iminfo['header'])
+            patch_out, _ = r_out.get_mpl_patches_texts()
 
+            # Plot
+            if add1D:
+                fig, axes = plt.subplots(ncols=4, nrows=1, sharey=False)
+                fig.set_size_inches(21.3,5.1)
+            else:
+                fig, axes = plt.subplots(ncols=3, nrows=1, sharey=True)
+                fig.set_size_inches(3.2*5,5.1)
+        
             transparent = False
             titlecolor = 'k'
             if presentation:
@@ -534,6 +552,15 @@ class MCMCfitter(object):
             cbar.ax.tick_params(axis='both', colors=titlecolor,which='both')
             # cbar.remove()
             plt.tight_layout()
+            # Plot the masked sources
+            for i, p in enumerate(patch_list):
+                p.set_edgecolor('g')
+                axes[0].add_patch(p)
+            # Plot the mask_outside region
+            for i, p in enumerate(patch_out):
+                p.set_edgecolor('gray')
+                axes[0].add_patch(p)
+
 
             im1 = axes[1].imshow(model,cmap='inferno', origin='lower', norm = NORMres)
             axes[1].set_title("Model",color=titlecolor)
@@ -555,13 +582,19 @@ class MCMCfitter(object):
             for ax in axes.flat:
                 ax.set_xlabel('Pixels')
 
-            fig.subplots_adjust(hspace=0.01)
+            if add1D:
+                self.plot_1D(d=3.0, d_int_kpc=None, savefig=None, saveradial=None,ax=axes[3],show=False,close=False)
+                # fig.subplots_adjust(hspace=0.01)
+                plt.tight_layout()
+            else:
+                fig.subplots_adjust(hspace=0.01)
+
             if savefig is not None: plt.savefig(savefig.replace('.pdf','_residual.pdf'),transparent=transparent)
             # plt.show()
             plt.close()
         return
 
-    def plot_1D(self, d=3.0, d_int_kpc=None, savefig=None, plotconvolvedmodel=False, show=False, close=True, presentation=False, saveradial=None):
+    def plot_1D(self, d=3.0, d_int_kpc=None, savefig=None, plotconvolvedmodel=False, show=False, close=True, presentation=False, saveradial=None, ax=None):
         """Plot 1D annulus and model"""
 
         if d_int_kpc is not None:
@@ -612,7 +645,15 @@ class MCMCfitter(object):
         print(f"Radial profile chi2 value: {self.chi2_annulus:.1F} | DOF = {self.DOF_annulus:.1F} | chi2/DOF = {self.chi2_red_annulus:.1F}")
 
         ####### Plot
-        fig = plt.figure()
+        if ax is None:  
+            fig, ax = plt.subplots()
+        else: # Its a subplot
+            # Plot with y label and ticks on the right side.
+            ax.yaxis.set_label_position("right")
+            ax.yaxis.tick_right()
+            ax.set_aspect('equal')
+            ax.set_title('Circular annuli')
+
         transparent = False
         if presentation:
             utils.white_axes()
@@ -621,29 +662,29 @@ class MCMCfitter(object):
         msize = 4 #marker size
         mew = 1 # marker edge width
         elw = 1 # error line width
-        plt.errorbar(radius_kpc, profile, yerr=uncertainty
+        ax.errorbar(radius_kpc, profile, yerr=uncertainty
             ,marker='s', markeredgecolor='k', color='C0', markersize=msize
             ,elinewidth=elw,alpha=1.0,capsize=3.0, label='Data',zorder=0)
-        plt.plot(radius_kpc_analytical, analytical,color='C1',label='Best-fit model',zorder=1)
+        ax.plot(radius_kpc_analytical, analytical,color='C1',label='Best-fit model',zorder=1)
         if plotconvolvedmodel:
-            plt.plot(radius_kpc, modelprofile
+            ax.plot(radius_kpc, modelprofile
                 ,color='C2',label='Best-fit convolved model',zorder=2)
 
         
-        plt.axvline(r_e,ls='dashed',color='k',alpha=0.5,label=f'$r_e$={r_e:.0f} kpc',zorder=3)
+        ax.axvline(r_e,ls='dashed',color='k',alpha=0.5,label=f'$r_e$={r_e:.0f} kpc',zorder=3)
 
-        plt.xlabel('Annulus central radius [kpc]')
-        plt.ylabel('Average Intensity [Jy/beam]')
+        ax.set_xlabel('Annulus central radius [kpc]')
+        ax.set_ylabel('Average Intensity [Jy/beam]')
         plt.legend(ncol=2)
-        plt.xscale('log')
-        plt.yscale('log')
-        xlim = np.array(plt.xlim())
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        xlim = np.array(ax.get_xlim())
         # Start plot xlim at least at 10 kpc and end at least at 1000 kpc
         if xlim[0] > 1e1:
             xlim[0] = 0.9e1
         if xlim[1] < 1e3:
             xlim[1] = 1.1e3
-        plt.xlim(xlim)
+        ax.set_xlim(xlim)
 
         if savefig is not None: 
             plt.savefig(savefig.replace('.pdf','_annulus.pdf'),transparent=transparent)
@@ -796,6 +837,7 @@ def image_info(header, imagerms):
         "ysize":             header['NAXIS2'],
         "max_radius":        header['NAXIS1']*2,
         "imagerms":          imagerms, # in Jy/beam at the moment
+        "header":            header, # the rest of the header
         }
     return image_info
 

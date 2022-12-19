@@ -108,6 +108,9 @@ if __name__ == '__main__':
         sampler = fitter.loadMCMC()
     ########## FITTING ##########
 
+    # Convert params to RA,DEC and r_e in kpc.
+    fitter.convert_units()
+
     ########## PROCESSING ##########
     print("Best fit params in image units")
     fitter.print_bestfitparams(fitter.percentiles)
@@ -115,19 +118,17 @@ if __name__ == '__main__':
     savefig = fitter.plotdir + args.image.split('/')[-1].replace('.fits','.pdf')
     # Corner plot and sampler chain plot
     FDCA.mcmc_eo.plotMCMC(fitter.samples, pinit, savefig=savefig) 
-    # Data-model-residual plot
-    fitter.plot_data_model_residual(savefig=savefig, presentation=args.presentation)
+    # Data-model-residual plot, optionally with 1D annulus plot
+    fitter.plot_data_model_residual(savefig=savefig, presentation=args.presentation, add1D=True)
     ########## PROCESSING ##########
 
-    ########## CONVERT TO PHYSICAL UNITS ##########
-    # Convert params to RA,DEC and r_e in kpc.
-    fitter.convert_units()
+    ########## PRINT PHYSICAL UNITS ##########
     # print params also in useful units
     print("Best fit params in physical units")
     fitter.print_bestfitparams(fitter.percentiles_units)
     # calculate total flux
     totalflux = fitter.totalflux(args.d_int, args.d_int_kpc)
-    ########## CONVERT TO PHYSICAL UNITS ##########
+    ########## PRINT PHYSICAL UNITS ##########
 
     ########## ADDITIONAL PLOTTING DIAGNOSTICS ##########
     if args.saveradial:
@@ -135,7 +136,8 @@ if __name__ == '__main__':
     else:
         saveradial = None
 
-    fitter.plot_1D(d=3.0, d_int_kpc=None, savefig=savefig, saveradial=saveradial)
+    # Manually hardcoded to compute the profile up to 1 Mpc for A2256.
+    fitter.plot_1D(d=3.0, d_int_kpc=1000, savefig=savefig, saveradial=saveradial)
 
 
     # FDCA.plotting.compare_annuli():

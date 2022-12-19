@@ -100,7 +100,7 @@ def radialprofile(data, header=None, wcs=None, RA=None, DEC=None, x0_pix=None, y
             data_masked[rmask] = np.nan
 
     x,y = np.meshgrid(np.arange(data_masked.shape[1]),np.arange(data_masked.shape[0]))
-    R = np.sqrt( (x-x0_pix)**2 + (y-y0_pix)**2)
+    R = np.sqrt( (x-x0)**2 + (y-y0)**2)
     
     # Define inner radii at the annuli
     r = np.arange(1,pixradius,step=width)

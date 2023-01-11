@@ -64,6 +64,7 @@ def newargparse(bashfile=None):
     parser.add_argument('-d_int_kpc',     help='(float) Radius to integrate the model up to in kpc. Default=None',default=None, type=float)
     parser.add_argument('-presentation',  help='(bool) Plot transparent figures. Default: False',default=False, type=str2bool)
     parser.add_argument('-saveradial',    help='(bool) Whether to save the radial profile. Default: False',default=False, type=str2bool)
+    parser.add_argument('-zoomresidual',  help='(bool) What factor*r_e to zoom the residual plot. Default: None',default=None, type=float)
 
     if bashfile is None:
         args = parser.parse_args()
@@ -119,7 +120,7 @@ if __name__ == '__main__':
     # Corner plot and sampler chain plot
     FDCA.mcmc_eo.plotMCMC(fitter.samples, pinit, savefig=savefig) 
     # Data-model-residual plot, optionally with 1D annulus plot
-    fitter.plot_data_model_residual(savefig=savefig, presentation=args.presentation, add1D=True)
+    fitter.plot_data_model_residual(savefig=savefig, presentation=args.presentation, add1D=True, zoomresidual=args.zoomresidual)
     ########## PROCESSING ##########
 
     ########## PRINT PHYSICAL UNITS ##########

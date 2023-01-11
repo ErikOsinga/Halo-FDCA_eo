@@ -208,6 +208,24 @@ class MCMCfitter(object):
 
         return data_masked, wherefinite, data_mask0
 
+    def zoom_data(self, radius=3.0):
+        """
+        Give back the xlim and ylim, so the plot_residual() function
+        does not contain the full field of view.
+
+        data     -- 2D array
+        model    -- 2D array
+        residual -- 2D array
+        radius   -- float    -- radius in terms of r_e how big to make the image
+        """
+        # Central coords in pixels
+        x0, y0 = self.bestfitp['x0'], self.bestfitp['y0']
+        # zoom into 3R500
+        radius = self.bestfitp['r1']*radius
+        xlim = (x0-radius,x0+radius)
+        ylim = (y0-radius,y0+radius)
+        return xlim, ylim
+
     def convolve_with_gaussian(self, data):
         """
         data   -- 2D array
@@ -497,7 +515,7 @@ class MCMCfitter(object):
 
         return totalflux
 
-    def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None, presentation=False, sqrtstretch=True, add1D=True):
+    def plot_data_model_residual(self, plotregrid=False, vmin=None, vmax=None, savefig=None, presentation=False, sqrtstretch=True, add1D=True, zoomresidual=None):
         """Plot the data-model-residual plot"""
         if plotregrid:
             print("TODO: Plot regridded versions")
@@ -579,8 +597,14 @@ class MCMCfitter(object):
 
 
             axes[0].set_ylabel('Pixels')
-            for ax in axes.flat:
+            if zoomresidual is not None: 
+                xlim, ylim = self.zoom_data(zoomresidual)
+            else:
+                xlim, ylim = axes[0].get_xlim(), axes[0].get_ylim()
+            for ax in axes.flat[:3]:
                 ax.set_xlabel('Pixels')
+                ax.set_xlim(xlim)
+                ax.set_ylim(ylim)
 
             if add1D:
                 self.plot_1D(d=3.0, d_int_kpc=None, savefig=None, saveradial=None,ax=axes[3],show=False,close=False)
